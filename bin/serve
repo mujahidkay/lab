@@ -21,14 +21,14 @@ usage() { echo "usage: serve start [--build] | stop | build" >&2; exit 2; }
 
 _need_deps() {
   have node || die "serve: node not found (install Node.js >= 18)"
-  have npm  || die "serve: npm not found"
-  [ -d "$LAB_ROOT/node_modules" ] || die "serve: dependencies not installed — run 'npm install' in $LAB_ROOT"
+  have yarn || die "serve: yarn not found (Yarn 4 via corepack)"
+  [ -d "$LAB_ROOT/node_modules" ] || die "serve: dependencies not installed — run 'yarn install' in $LAB_ROOT"
 }
 
 _build_app() {
   local app=$1
   echo "  building $app ..."
-  ( cd "$LAB_ROOT" && DASH_PORT="$DASH_PORT" npm run build --workspace "@lab/$app" --silent ) \
+  ( cd "$LAB_ROOT" && DASH_PORT="$DASH_PORT" yarn workspace "@lab/$app" build ) \
     || die "serve: build failed for $app"
 }
 

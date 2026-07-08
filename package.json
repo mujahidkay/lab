@@ -8,12 +8,12 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
-    "dev:api": "npm run dev --workspace apps/api",
-    "dev:whiteboard": "npm run dev --workspace apps/whiteboard",
-    "dev:observatory": "npm run dev --workspace apps/observatory",
-    "typecheck": "tsc -b"
+    "build": "yarn workspace @lab/whiteboard build && yarn workspace @lab/observatory build",
+    "dev:api": "yarn workspace @lab/api dev",
+    "dev:whiteboard": "yarn workspace @lab/whiteboard dev",
+    "dev:observatory": "yarn workspace @lab/observatory dev"
   },
+  "packageManager": "yarn@4.17.0",
   "engines": {
     "node": ">=18"
   }

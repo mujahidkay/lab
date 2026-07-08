@@ -22,5 +22,14 @@ apps/*/dist/
 packages/*/dist/
 *.tsbuildinfo
 
+# yarn (berry): commit yarn.lock + releases/plugins, ignore caches/state/PnP
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
 # os
 .DS_Store

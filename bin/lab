@@ -81,7 +81,7 @@ cmd_status() {
   echo "  LAB_TOKEN:   $([ -n "${LAB_TOKEN:-}" ] && echo set || echo MISSING)"
   echo
   echo "  dependencies:"
-  for c in claude node npm git gh cloudflared; do
+  for c in claude node yarn git gh cloudflared; do
     if have "$c"; then printf '    %-12s %s\n' "$c" "$(command -v "$c")"; else printf '    %-12s (not found)\n' "$c"; fi
   done
   echo

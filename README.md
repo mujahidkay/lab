@@ -28,6 +28,7 @@ You interact through the two apps and GitHub. You do **not** drive the lab CLI. 
 
 - **Claude Code** (`claude`) - the session that runs everything.
 - **Node.js >= 18** - the API and both apps.
+- **Yarn 4** - via Corepack (shipped with Node). If `yarn` is missing, run `corepack enable`.
 - **git >= 2.5** - worktrees (`git worktree`) are load-bearing.
 - **`gh`** authenticated with **repo + workflow** scopes: `gh auth login`, then `gh auth status`.
 - A **target GitHub repo** the lab works on. Use a **SANDBOX repo**. Strongly recommended. The lab pushes branches and opens PRs against it.
@@ -38,7 +39,7 @@ You interact through the two apps and GitHub. You do **not** drive the lab CLI. 
 ```sh
 cd lab/
 chmod +x bin/*
-npm install
+yarn install
 cp config.env.example config.env
 ```
 

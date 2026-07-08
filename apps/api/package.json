@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lab/shared": "*",
+    "@lab/shared": "workspace:*",
     "chokidar": "^3.6.0"
   },
   "devDependencies": {

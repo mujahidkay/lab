@@ -114,6 +114,7 @@ Requirements: Docker.
 ```sh
 # one checkout per repo, each with its own config.env (unique DASH_PORT + REPO_SLUG + LAB_GH_*)
 ./labctl build     # once: build the runtime image (node, yarn, git, gh, cloudflared, claude)
+./labctl init      # first time for a checkout: fork + clone the target repo inside the container
 ./labctl up        # start the container, install deps on first run, enter Claude Code inside
 ```
 

@@ -7,6 +7,7 @@
 # so code edits need no rebuild. Claude Code runs INSIDE the container.
 #
 #   ./labctl build          build (or rebuild) the runtime image
+#   ./labctl init           first-time setup inside the container: fork + clone the target repo
 #   ./labctl up             start the container and enter Claude Code (the orchestrator)
 #   ./labctl serve          start the API + apps inside the container (background)
 #   ./labctl sh             open a shell in the container (debugging)
@@ -84,6 +85,7 @@ cmd_up() {
   _dexec -it "$NAME" claude
 }
 
+cmd_init()  { _ensure_up; _dexec -it "$NAME" bin/lab init; }
 cmd_serve() { _ensure_up; _ensure_deps; _dexec "$NAME" bin/serve start; }
 cmd_sh()    { _ensure_up; _dexec -it "$NAME" bash -l; }
 
@@ -105,10 +107,11 @@ cmd_rm()   {
   echo "removed container + volumes for $NAME (your files under $INSTANCE_PATH are untouched)"
 }
 
-[ $# -gt 0 ] || { echo "usage: ./labctl build|up|serve|sh|status|stop|rm" >&2; exit 2; }
+[ $# -gt 0 ] || { echo "usage: ./labctl build|init|up|serve|sh|status|stop|rm" >&2; exit 2; }
 sub=$1; shift || true
 case "$sub" in
   build)  cmd_build "$@" ;;
+  init)   cmd_init "$@" ;;
   up)     cmd_up "$@" ;;
   serve)  cmd_serve "$@" ;;
   sh)     cmd_sh "$@" ;;

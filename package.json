@@ -1,0 +1,20 @@
+{
+  "name": "lab",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A lab of autonomous coding agents — a simpler, faithful clone of kriskowal/garden.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:api": "npm run dev --workspace apps/api",
+    "dev:whiteboard": "npm run dev --workspace apps/whiteboard",
+    "dev:observatory": "npm run dev --workspace apps/observatory",
+    "typecheck": "tsc -b"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

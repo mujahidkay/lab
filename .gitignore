@@ -1,0 +1,26 @@
+# secrets & runtime
+config.env
+.lab/
+
+# separate git repos / clones, not tracked by the lab meta repo
+notebook/
+project/
+worktrees/
+
+# runtime state: keep the directory structure (.gitkeep), ignore per-run contents
+/docket/*/*
+!/docket/*/.gitkeep
+/whiteboard/*/*
+!/whiteboard/*/.gitkeep
+
+# tooling caches
+.impeccable/
+
+# node
+node_modules/
+apps/*/dist/
+packages/*/dist/
+*.tsbuildinfo
+
+# os
+.DS_Store

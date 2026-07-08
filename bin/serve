@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# bin/serve — build + run the state API and both apps, and (optionally) the
+# Cloudflare tunnel for remote viewing.
+#
+#   serve start [--build]   # build apps if needed, run API in the background, start tunnel if TUNNEL=cloudflared
+#   serve stop
+#   serve build             # (re)build both apps
+#
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+API_LOG="$DOTLAB/serve.log"
+API_PID="$DOTLAB/serve.pid"
+TUN_LOG="$DOTLAB/tunnel.log"
+TUN_PID="$DOTLAB/tunnel.pid"
+
+usage() { echo "usage: serve start [--build] | stop | build" >&2; exit 2; }
+
+_need_deps() {
+  have node || die "serve: node not found (install Node.js >= 18)"
+  have npm  || die "serve: npm not found"
+  [ -d "$LAB_ROOT/node_modules" ] || die "serve: dependencies not installed — run 'npm install' in $LAB_ROOT"
+}
+
+_build_app() {
+  local app=$1
+  echo "  building $app ..."
+  ( cd "$LAB_ROOT" && DASH_PORT="$DASH_PORT" npm run build --workspace "@lab/$app" --silent ) \
+    || die "serve: build failed for $app"
+}
+
+cmd_build() {
+  _need_deps
+  _build_app whiteboard
+  _build_app observatory
+  echo "built."
+}
+
+_running() { [ -f "$API_PID" ] && kill -0 "$(cat "$API_PID")" 2>/dev/null; }
+
+cmd_start() {
+  local force_build=0
+  while [ $# -gt 0 ]; do case "$1" in --build) force_build=1; shift ;; *) die "serve start: unknown arg '$1'" ;; esac; done
+  _need_deps
+  mkdir -p "$DOTLAB"
+
+  if _running; then echo "serve: already running (pid $(cat "$API_PID"))"; else
+    [ "$force_build" = 1 ] && cmd_build
+    [ -d "$LAB_ROOT/apps/whiteboard/dist" ] || _build_app whiteboard
+    [ -d "$LAB_ROOT/apps/observatory/dist" ] || _build_app observatory
+
+    echo "starting API on ${DASH_HOST}:${DASH_PORT} ..."
+    ( cd "$LAB_ROOT" && LAB_ROOT="$LAB_ROOT" DASH_HOST="$DASH_HOST" DASH_PORT="$DASH_PORT" LAB_TOKEN="${LAB_TOKEN:-}" \
+        nohup "$LAB_ROOT/node_modules/.bin/tsx" apps/api/src/server.ts >"$API_LOG" 2>&1 & echo $! > "$API_PID" )
+    sleep 1
+    _running || { echo "serve: API failed to start; see $API_LOG" >&2; tail -5 "$API_LOG" >&2 || true; exit 1; }
+    echo "  API pid $(cat "$API_PID")  log $API_LOG"
+  fi
+
+  echo "  local: http://${DASH_HOST}:${DASH_PORT}/   observatory: /observatory"
+  [ -n "${LAB_TOKEN:-}" ] || warn "  LAB_TOKEN is empty — run 'bin/lab init' or set it in config.env"
+
+  # Tunnel
+  if [ "${TUNNEL:-none}" = "cloudflared" ]; then
+    if ! have cloudflared; then warn "  TUNNEL=cloudflared but cloudflared not found; skipping tunnel"; return 0; fi
+    if [ -f "$TUN_PID" ] && kill -0 "$(cat "$TUN_PID")" 2>/dev/null; then
+      echo "  tunnel already running: $(cat "$DOTLAB/tunnel-url" 2>/dev/null || echo '?')"
+      return 0
+    fi
+    : > "$TUN_LOG"; rm -f "$DOTLAB/tunnel-url"
+    if [ -n "${CF_TUNNEL_NAME:-}" ]; then
+      echo "starting named cloudflare tunnel '$CF_TUNNEL_NAME' ..."
+      nohup cloudflared tunnel run "$CF_TUNNEL_NAME" >"$TUN_LOG" 2>&1 & echo $! > "$TUN_PID"
+      echo "  (named tunnel; its hostname is whatever you configured for $CF_TUNNEL_NAME)"
+    else
+      echo "starting quick cloudflare tunnel ..."
+      nohup cloudflared tunnel --url "http://127.0.0.1:${DASH_PORT}" >"$TUN_LOG" 2>&1 & echo $! > "$TUN_PID"
+      # Parse the trycloudflare URL from the log (appears within a few seconds).
+      local url="" i=0
+      while [ $i -lt 20 ]; do
+        url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$TUN_LOG" 2>/dev/null | head -1 || true)"
+        [ -n "$url" ] && break
+        sleep 0.5; i=$((i + 1))
+      done
+      if [ -n "$url" ]; then
+        printf '%s\n' "$url" > "$DOTLAB/tunnel-url"
+        "$LAB_ROOT/bin/notebook" append --kind message --role coordinator --to director \
+          --slug tunnel-url --body "Remote UI is live at $url (enter LAB_TOKEN to connect)." >/dev/null 2>&1 || true
+        echo "  REMOTE: $url   (open on any device; enter LAB_TOKEN)"
+      else
+        warn "  tunnel started but URL not detected yet; check $TUN_LOG"
+      fi
+    fi
+  fi
+}
+
+cmd_stop() {
+  local stopped=0
+  if [ -f "$API_PID" ]; then kill "$(cat "$API_PID")" 2>/dev/null && stopped=1; rm -f "$API_PID"; fi
+  pkill -f 'apps/api/src/server.ts' 2>/dev/null || true
+  if [ -f "$TUN_PID" ]; then kill "$(cat "$TUN_PID")" 2>/dev/null && stopped=1; rm -f "$TUN_PID"; fi
+  rm -f "$DOTLAB/tunnel-url"
+  echo "$([ "$stopped" = 1 ] && echo 'serve stopped' || echo 'serve was not running')"
+}
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  start) cmd_start "$@" ;;
+  stop)  cmd_stop "$@" ;;
+  build) cmd_build "$@" ;;
+  *) usage ;;
+esac

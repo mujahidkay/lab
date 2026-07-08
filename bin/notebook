@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# bin/notebook — the lab's append-only log and message bus (the agents' only
+# durable memory). Backed by its own git repo at notebook/.
+#
+#   notebook append --kind K --role R [--to T] [--job J] [--stage S]
+#                   [--status ST] [--refs "a,b"] [--slug S] --body "text"
+#   notebook append ... --body-file FILE
+#   notebook tail [N]
+#   notebook read PATH
+#
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() { echo "usage: notebook append|tail|read ..." >&2; exit 2; }
+
+cmd_append() {
+  local kind="" role="" to="" job="" stage="" status="" refs="" slug="" body="" body_file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind)      kind=$2; shift 2 ;;
+      --role)      role=$2; shift 2 ;;
+      --to)        to=$2; shift 2 ;;
+      --job)       job=$2; shift 2 ;;
+      --stage)     stage=$2; shift 2 ;;
+      --status)    status=$2; shift 2 ;;
+      --refs)      refs=$2; shift 2 ;;
+      --slug)      slug=$2; shift 2 ;;
+      --body)      body=$2; shift 2 ;;
+      --body-file) body_file=$2; shift 2 ;;
+      *) die "notebook append: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$kind" ] || die "notebook append: --kind required"
+  [ -n "$role" ] || die "notebook append: --role required"
+  [ -n "$body" ] || { [ -n "$body_file" ] && body="$(cat "$body_file")"; }
+
+  local iso day tim relpath abspath
+  iso="$(ts_iso)"
+  day="$(date -u +%Y/%m/%d)"
+  tim="$(date -u +%H%M%S)"
+  [ -n "$slug" ] || slug="$(slugify "${job:-$kind}")"
+  [ -n "$slug" ] || slug="$kind"
+  relpath="$day/${tim}Z-${kind}-${slug}-$(rand_hex 2).md"
+  abspath="$NOTEBOOK/$relpath"
+  mkdir -p "$(dirname "$abspath")"
+
+  {
+    echo "---"
+    echo "ts: $iso"
+    echo "kind: $kind"
+    echo "role: $role"
+    [ -n "$to" ]     && echo "to: $to"
+    [ -n "$job" ]    && echo "job: $job"
+    [ -n "$stage" ]  && echo "stage: $stage"
+    [ -n "$status" ] && echo "status: $status"
+    if [ -n "$refs" ]; then
+      printf 'refs: ['
+      printf '%s' "$refs" | awk -F, '{for(i=1;i<=NF;i++){gsub(/^ +| +$/,"",$i); printf (i>1?", %s":"%s"), $i}}'
+      printf ']\n'
+    fi
+    echo "---"
+    printf '%s\n' "$body"
+  } > "$abspath"
+
+  if [ -d "$NOTEBOOK/.git" ]; then
+    git -C "$NOTEBOOK" add "$relpath" >/dev/null 2>&1 || true
+    git -C "$NOTEBOOK" commit -q -m "$kind: ${job:-$slug}" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$relpath"
+}
+
+cmd_tail() {
+  local n="${1:-20}"
+  [ -d "$NOTEBOOK" ] || return 0
+  # Paths encode date/time, so a lexical sort is chronological.
+  find "$NOTEBOOK" -type f -name '*.md' 2>/dev/null | sort | tail -n "$n" | while IFS= read -r f; do
+    local rel k r j s
+    rel="${f#"$NOTEBOOK"/}"
+    k="$(fm_get "$f" kind)"; r="$(fm_get "$f" role)"; j="$(fm_get "$f" job)"; s="$(fm_get "$f" stage)"
+    printf '%-52s %-8s %-11s %-10s %s\n' "$rel" "${k:-?}" "${r:-?}" "${s:-}" "${j:-}"
+  done
+}
+
+cmd_read() {
+  local p=$1
+  [ -f "$p" ] || p="$NOTEBOOK/$p"
+  [ -f "$p" ] || die "notebook read: not found: $1"
+  cat "$p"
+}
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  append) cmd_append "$@" ;;
+  tail)   cmd_tail "$@" ;;
+  read)   cmd_read "$@" ;;
+  *) usage ;;
+esac

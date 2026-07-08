@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# bin/watch — the lab's standing watcher. Run as a background task; the
+# orchestrator surfaces its stdout via Monitor and reacts. It prints one
+# EVENT line (and appends one notebook message) only on terminal/actionable
+# transitions, so it never spams:
+#   EVENT inbox <file>          a human reply landed  -> orchestrator should drain
+#   EVENT ci pass PR#<n>        checks went green
+#   EVENT ci fail PR#<n>        checks failed
+#   EVENT job open <id>         a new job was posted
+#
+# NB: no stdin prompts. Ever. Best-effort: tolerates missing gh / offline.
+
+set -uo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+INTERVAL="${WATCH_INTERVAL:-30}"
+SEEN_INBOX="$DOTLAB/watch-inbox.seen"
+SEEN_JOBS="$DOTLAB/watch-jobs.seen"
+mkdir -p "$DOTLAB"; : > "$SEEN_INBOX.tmp" 2>/dev/null || true
+touch "$SEEN_INBOX" "$SEEN_JOBS"
+
+emit() {  # emit <notebook-body> <event-line...>
+  local body=$1; shift
+  echo "EVENT $*"
+  "$LAB_ROOT/bin/notebook" append --kind message --role watch --to director --slug watch --body "$body" >/dev/null 2>&1 || true
+}
+
+trap 'echo "watch: stopping"; exit 0' INT TERM
+
+echo "watch: polling every ${INTERVAL}s (inbox, new jobs$(have gh && echo ', CI' || echo ''))"
+while :; do
+  # 1) inbox replies
+  for f in "$WHITEBOARD"/inbox/*.json; do
+    [ -f "$f" ] || continue
+    b="$(basename "$f")"
+    if ! grep -qxF "$b" "$SEEN_INBOX" 2>/dev/null; then
+      echo "$b" >> "$SEEN_INBOX"
+      emit "Human reply arrived ($b). Drain the whiteboard inbox." inbox "$b"
+    fi
+  done
+
+  # 2) newly-open jobs
+  for f in "$DOCKET"/open/*.md; do
+    [ -f "$f" ] || continue
+    id="$(basename "$f" .md)"
+    if ! grep -qxF "$id" "$SEEN_JOBS" 2>/dev/null; then
+      echo "$id" >> "$SEEN_JOBS"
+      emit "New job on the docket: $id." job open "$id"
+    fi
+  done
+
+  # 3) CI status for PRs referenced by active jobs (best-effort)
+  if have gh && [ -d "$PROJECT/.git" ]; then
+    prs="$(grep -rho 'PR#[0-9]\{1,\}' "$DOCKET"/claimed "$DOCKET"/open "$DOCKET"/blocked 2>/dev/null | sed 's/PR#//' | sort -u)"
+    for n in $prs; do
+      ( cd "$PROJECT" && gh pr checks "$n" >/dev/null 2>&1 ); rc=$?
+      # gh exit codes: 0 all pass, 8 pending, other = failing.
+      state=""
+      case "$rc" in 0) state=pass ;; 8) state=pending ;; *) state=fail ;; esac
+      [ "$state" = pending ] && continue
+      last="$(cat "$DOTLAB/watch-ci-$n" 2>/dev/null || echo)"
+      if [ "$state" != "$last" ]; then
+        echo "$state" > "$DOTLAB/watch-ci-$n"
+        emit "CI on PR#$n is $state." ci "$state" "PR#$n"
+      fi
+    done
+  fi
+
+  sleep "$INTERVAL"
+done

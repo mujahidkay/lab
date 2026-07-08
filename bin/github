@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# bin/github — token-gated wrapper over `gh`/`git`. A worker may only take an
+# outward action whose authorization token was granted to its job. The grant is
+# read from the job file on disk (docket/*/<job>.md `authorizations:`), NOT from
+# a caller-supplied list, so a subagent cannot escalate its own permissions.
+#
+#   github branch    --job J --dir D                         (needs: push)     push current branch to origin
+#   github pr-open   --job J --dir D --title T [--body B] [--base BR]  (needs: open-pr)  open a DRAFT PR
+#   github pr-review --job J --pr N --event approve|request-changes|comment --body B  (needs: review-comment)
+#   github merge     --job J --pr N                          (needs: merge)    squash-merge + delete branch
+#
+# All PRs open as drafts. Never pushes the default branch.
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() { echo "usage: github branch|pr-open|pr-review|merge --job <id> ..." >&2; exit 2; }
+
+# require_auth JOB TOKEN — die unless TOKEN is in the job's authorizations list.
+require_auth() {
+  local job=$1 need=$2 f raw
+  f="$("$LAB_ROOT/bin/docket" path "$job" 2>/dev/null | head -1)" || true
+  [ -n "$f" ] && [ -f "$f" ] || die "github: job '$job' not found on the docket"
+  raw="$(fm_get "$f" authorizations)"            # e.g. "[open-pr, push]"
+  raw="${raw#[}"; raw="${raw%]}"
+  local tok
+  local IFS=','
+  for tok in $raw; do
+    tok="$(printf '%s' "$tok" | tr -d ' ')"
+    [ "$tok" = "$need" ] && return 0
+  done
+  die "github: authorization '$need' not granted to job $job (has: ${raw:-none}); refusing"
+}
+
+_require_gh() { have gh || die "github: gh CLI not found"; }
+
+cmd_branch() {
+  local job="" dir=""
+  while [ $# -gt 0 ]; do case "$1" in --job) job=$2; shift 2 ;; --dir) dir=$2; shift 2 ;; *) die "github branch: unknown arg '$1'" ;; esac; done
+  [ -n "$job" ] && [ -n "$dir" ] || die "github branch: --job and --dir required"
+  require_auth "$job" push
+  local br; br="$(git -C "$dir" rev-parse --abbrev-ref HEAD)"
+  case "$br" in "$DEFAULT_BRANCH"|main|master|HEAD) die "github branch: refusing to push protected branch '$br'";; esac
+  git -C "$dir" push -u origin "$br"
+  echo "pushed $br"
+}
+
+cmd_pr_open() {
+  local job="" dir="" title="" body="" base="$DEFAULT_BRANCH"
+  while [ $# -gt 0 ]; do case "$1" in
+    --job) job=$2; shift 2 ;; --dir) dir=$2; shift 2 ;; --title) title=$2; shift 2 ;;
+    --body) body=$2; shift 2 ;; --base) base=$2; shift 2 ;; *) die "github pr-open: unknown arg '$1'" ;;
+  esac; done
+  [ -n "$job" ] && [ -n "$dir" ] && [ -n "$title" ] || die "github pr-open: --job --dir --title required"
+  require_auth "$job" open-pr
+  _require_gh
+  ( cd "$dir" && gh pr create --draft --title "$title" --body "${body:-Draft PR for $job}" --base "$base" )
+}
+
+cmd_pr_review() {
+  local job="" pr="" event="comment" body=""
+  while [ $# -gt 0 ]; do case "$1" in
+    --job) job=$2; shift 2 ;; --pr) pr=$2; shift 2 ;; --event) event=$2; shift 2 ;;
+    --body) body=$2; shift 2 ;; *) die "github pr-review: unknown arg '$1'" ;;
+  esac; done
+  [ -n "$job" ] && [ -n "$pr" ] || die "github pr-review: --job and --pr required"
+  require_auth "$job" review-comment
+  _require_gh
+  local flag
+  case "$event" in
+    approve)         flag=--approve ;;
+    request-changes) flag=--request-changes ;;
+    comment)         flag=--comment ;;
+    *) die "github pr-review: --event must be approve|request-changes|comment" ;;
+  esac
+  gh pr review "$pr" $flag --body "${body:-}"
+}
+
+cmd_merge() {
+  local job="" pr=""
+  while [ $# -gt 0 ]; do case "$1" in --job) job=$2; shift 2 ;; --pr) pr=$2; shift 2 ;; *) die "github merge: unknown arg '$1'" ;; esac; done
+  [ -n "$job" ] && [ -n "$pr" ] || die "github merge: --job and --pr required"
+  require_auth "$job" merge
+  _require_gh
+  gh pr merge "$pr" --squash --delete-branch
+  echo "merged PR $pr"
+}
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  branch)    cmd_branch "$@" ;;
+  pr-open)   cmd_pr_open "$@" ;;
+  pr-review) cmd_pr_review "$@" ;;
+  merge)     cmd_merge "$@" ;;
+  *) usage ;;
+esac

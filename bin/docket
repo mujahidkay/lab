@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# bin/docket — the lab's task queue. States are directories; claiming is an
+# atomic rename (open -> claimed), so at most one worker owns a job.
+#
+#   docket post   --verb V --title "T" [--target R] [--priority N] [--stage S]
+#                 [--eligible "r1,r2"] [--authorizations "t1,t2"]
+#                 [--refs "..."] [--preconditions "..."] --body "text" | --body-file F
+#   docket claim    <id> [--role R] [--host H]
+#   docket complete <id> [--result PATH]
+#   docket abandon  <id> [--reason "..."]
+#   docket block    <id> --ask <ask_id>
+#   docket unblock  <id> [--answer "text"]
+#   docket list     [open|claimed|blocked|done|abandoned ...]
+#   docket path     <id>            # print the current path of a job
+#
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+STATES="open claimed blocked done abandoned"
+
+usage() { echo "usage: docket post|claim|complete|abandon|block|unblock|list|path ..." >&2; exit 2; }
+
+# Find a job's current file across all states. Echoes path, or empty.
+_find_job() {
+  local id=$1 st f
+  for st in $STATES; do
+    f="$DOCKET/$st/$id.md"
+    [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+
+_yaml_list() { # "a, b ,c" -> "[a, b, c]"
+  local raw=$1
+  [ -n "$raw" ] || { printf '[]'; return; }
+  printf '['
+  printf '%s' "$raw" | awk -F, '{for(i=1;i<=NF;i++){gsub(/^ +| +$/,"",$i); if($i!="") printf (i>1?", %s":"%s"), $i}}'
+  printf ']'
+}
+
+cmd_post() {
+  local verb="" title="" target="${REPO_SLUG:-}" priority=2 stage="" \
+        eligible="" authorizations="" refs="" preconditions="" body="" body_file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --verb)           verb=$2; shift 2 ;;
+      --title)          title=$2; shift 2 ;;
+      --target)         target=$2; shift 2 ;;
+      --priority)       priority=$2; shift 2 ;;
+      --stage)          stage=$2; shift 2 ;;
+      --eligible)       eligible=$2; shift 2 ;;
+      --authorizations) authorizations=$2; shift 2 ;;
+      --refs)           refs=$2; shift 2 ;;
+      --preconditions)  preconditions=$2; shift 2 ;;
+      --body)           body=$2; shift 2 ;;
+      --body-file)      body_file=$2; shift 2 ;;
+      *) die "docket post: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$verb" ]  || die "docket post: --verb required"
+  [ -n "$title" ] || die "docket post: --title required"
+  [ -n "$body" ]  || { [ -n "$body_file" ] && body="$(cat "$body_file")"; }
+  [ -n "$body" ]  || body="$title"
+  [ -n "$stage" ] || stage="$verb"
+  # Default eligible role by verb.
+  if [ -z "$eligible" ]; then
+    case "$verb" in
+      research) eligible=researcher ;;
+      design)   eligible=theorist ;;
+      build)    eligible=technician ;;
+      review)   eligible=referee ;;
+      fix)      eligible=debugger ;;
+      merge)    eligible=coordinator ;;
+      improve)  eligible=director ;;
+      *)        eligible=technician ;;
+    esac
+  fi
+
+  local id path
+  id="$(new_job_id)"
+  path="$DOCKET/open/$id.md"
+  {
+    echo "---"
+    echo "id: $id"
+    echo "verb: $verb"
+    echo "title: $title"
+    echo "target: $target"
+    echo "priority: $priority"
+    echo "stage: $stage"
+    echo "eligible_roles: $(_yaml_list "$eligible")"
+    echo "authorizations: $(_yaml_list "$authorizations")"
+    echo "refs: $(_yaml_list "$refs")"
+    echo "preconditions: $(_yaml_list "$preconditions")"
+    echo "blocked_on: null"
+    echo "claimed_by: null"
+    echo "claimed_at: null"
+    echo "posted_at: $(ts_iso)"
+    echo "state: open"
+    echo "---"
+    printf '%s\n' "$body"
+  } > "$path"
+  printf '%s\n' "$id"
+}
+
+cmd_claim() {
+  local id=$1; shift || true
+  local role="" host=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --role) role=$2; shift 2 ;;
+      --host) host=$2; shift 2 ;;
+      *) die "docket claim: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$id" ] || die "docket claim: <id> required"
+  local src="$DOCKET/open/$id.md" dst="$DOCKET/claimed/$id.md"
+  if ! atomic_mv "$src" "$dst"; then
+    echo "lost-race" >&2
+    return 1
+  fi
+  fm_set "$dst" state claimed
+  [ -n "$role" ] && fm_set "$dst" claimed_by "$role"
+  fm_set "$dst" claimed_at "$(ts_iso)"
+
+  # Snapshot the verbatim task into the versioned notebook at claim time, so the
+  # full job body is journaled (and git-committed) even after docket/done is
+  # cleaned. Done here in the shell so it is deterministic and the orchestrator
+  # never has to pull the body into its own reasoning context.
+  local to_args=""
+  [ -n "$role" ] && to_args="--to $role"
+  "$LAB_ROOT/bin/notebook" append --kind assign --role director $to_args \
+    --job "$id" --stage "$(fm_get "$dst" stage)" --slug "claim-$id" \
+    --body "$(printf 'Claimed %s (verb=%s, stage=%s)\nTitle: %s\n\n--- task (verbatim) ---\n%s' \
+        "$id" "$(fm_get "$dst" verb)" "$(fm_get "$dst" stage)" "$(fm_get "$dst" title)" "$(body_of "$dst")")" \
+    >/dev/null 2>&1 || true
+
+  printf '%s\n' "$dst"
+}
+
+cmd_complete() {
+  local id=$1; shift || true
+  local result=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --result) result=$2; shift 2 ;; *) die "docket complete: unknown arg '$1'" ;; esac
+  done
+  local src="$DOCKET/claimed/$id.md" dst="$DOCKET/done/$id.md"
+  atomic_mv "$src" "$dst" || die "docket complete: not a claimed job: $id"
+  fm_set "$dst" state done
+  fm_set "$dst" completed_at "$(ts_iso)"
+  [ -n "$result" ] && fm_set "$dst" result "$result"
+  printf '%s\n' "$dst"
+}
+
+cmd_abandon() {
+  local id=$1; shift || true
+  local reason="unspecified"
+  while [ $# -gt 0 ]; do
+    case "$1" in --reason) reason=$2; shift 2 ;; *) die "docket abandon: unknown arg '$1'" ;; esac
+  done
+  local src dst="$DOCKET/abandoned/$id.md"
+  src="$(_find_job "$id")" || die "docket abandon: not found: $id"
+  atomic_mv "$src" "$dst" || die "docket abandon: could not move $id"
+  fm_set "$dst" state abandoned
+  fm_set "$dst" abandoned_reason "$reason"
+  printf '%s\n' "$dst"
+}
+
+cmd_block() {
+  local id=$1; shift || true
+  local ask=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --ask) ask=$2; shift 2 ;; *) die "docket block: unknown arg '$1'" ;; esac
+  done
+  [ -n "$ask" ] || die "docket block: --ask <ask_id> required"
+  local src dst="$DOCKET/blocked/$id.md"
+  src="$(_find_job "$id")" || die "docket block: not found: $id"
+  atomic_mv "$src" "$dst" || die "docket block: could not move $id"
+  fm_set "$dst" state blocked
+  fm_set "$dst" blocked_on "$ask"
+  printf '%s\n' "$dst"
+}
+
+cmd_unblock() {
+  local id=$1; shift || true
+  local answer=""
+  while [ $# -gt 0 ]; do
+    case "$1" in --answer) answer=$2; shift 2 ;; *) die "docket unblock: unknown arg '$1'" ;; esac
+  done
+  local src="$DOCKET/blocked/$id.md" dst="$DOCKET/open/$id.md"
+  atomic_mv "$src" "$dst" || die "docket unblock: not a blocked job: $id"
+  fm_set "$dst" state open
+  fm_set "$dst" blocked_on null
+  if [ -n "$answer" ]; then
+    { printf '\n---\nHuman answer (%s): %s\n' "$(ts_iso)" "$answer"; } >> "$dst"
+  fi
+  printf '%s\n' "$dst"
+}
+
+cmd_list() {
+  local states="$*"
+  [ -n "$states" ] || states="$STATES"
+  local st f
+  for st in $states; do
+    for f in "$DOCKET/$st"/*.md; do
+      [ -f "$f" ] || continue
+      printf '%-10s p%-2s %-9s %-11s %-30s %s\n' \
+        "$st" "$(fm_get "$f" priority)" "$(fm_get "$f" verb)" \
+        "$(fm_get "$f" stage)" "$(fm_get "$f" id)" "$(fm_get "$f" title)"
+    done
+  done
+}
+
+cmd_path() { _find_job "$1" || die "docket path: not found: $1"; echo; }
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  post)     cmd_post "$@" ;;
+  claim)    cmd_claim "$@" ;;
+  complete) cmd_complete "$@" ;;
+  abandon)  cmd_abandon "$@" ;;
+  block)    cmd_block "$@" ;;
+  unblock)  cmd_unblock "$@" ;;
+  list)     cmd_list "$@" ;;
+  path)     cmd_path "$@" ;;
+  *) usage ;;
+esac

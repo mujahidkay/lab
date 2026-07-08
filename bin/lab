@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# bin/lab — set up and inspect the lab.
+#
+#   lab init [--rotate-token]   # config.env, LAB_TOKEN, notebook repo, dirs, clone target, reconcile
+#   lab status                  # config + dependency + queue summary
+#
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() { echo "usage: lab init|status ..." >&2; exit 2; }
+
+_placeholder_repo() {
+  case "${REPO_SLUG:-}" in
+    ""|you/*|*/your-sandbox-repo|owner/name) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_init() {
+  local rotate=0
+  while [ $# -gt 0 ]; do
+    case "$1" in --rotate-token) rotate=1; shift ;; *) die "lab init: unknown arg '$1'" ;; esac
+  done
+
+  # config.env
+  if [ ! -f "$LAB_ROOT/config.env" ]; then
+    cp "$LAB_ROOT/config.env.example" "$LAB_ROOT/config.env"
+    echo "created config.env from example — edit REPO_SLUG before real work"
+  fi
+
+  # LAB_TOKEN
+  if [ "$rotate" = 1 ] || [ -z "${LAB_TOKEN:-}" ]; then
+    local tok; tok="$(rand_hex 24)"
+    env_set "$LAB_ROOT/config.env" LAB_TOKEN "$tok"
+    LAB_TOKEN="$tok"
+    echo "set LAB_TOKEN (48 hex chars) in config.env"
+  fi
+
+  # notebook repo
+  if [ ! -d "$NOTEBOOK/.git" ]; then
+    mkdir -p "$NOTEBOOK"
+    git -C "$NOTEBOOK" init -q
+    git -C "$NOTEBOOK" config user.email "lab@local"
+    git -C "$NOTEBOOK" config user.name "lab notebook"
+    echo "initialized notebook/ git repo"
+  fi
+
+  # dirs
+  mkdir -p "$DOCKET"/{open,claimed,blocked,done,abandoned} \
+           "$WHITEBOARD"/{questions,answered,inbox} \
+           "$WORKTREES" "$DOTLAB"
+
+  # clone target
+  if [ -d "$PROJECT/.git" ]; then
+    echo "project/ already present ($(git -C "$PROJECT" remote get-url origin 2>/dev/null || echo 'no origin'))"
+  elif _placeholder_repo; then
+    warn "REPO_SLUG is a placeholder ('${REPO_SLUG:-unset}') — edit config.env, then re-run 'bin/lab init' to clone"
+  elif have gh; then
+    echo "cloning $REPO_SLUG into project/ ..."
+    gh repo clone "$REPO_SLUG" "$PROJECT" -- --quiet || die "clone failed"
+  else
+    warn "gh not found — clone $REPO_SLUG into project/ manually"
+  fi
+
+  [ -d "$PROJECT/.git" ] && bin_reconcile
+  echo "lab init complete."
+}
+
+bin_reconcile() { "$LAB_ROOT/bin/wt" reconcile >/dev/null 2>&1 || true; }
+
+_count() { ls "$1"/*.md >/dev/null 2>&1 && ls "$1"/*.md | wc -l | tr -d ' ' || echo 0; }
+
+cmd_status() {
+  echo "lab status"
+  echo "  root:        $LAB_ROOT"
+  echo "  target:      ${REPO_SLUG:-<unset>}  (default branch: ${DEFAULT_BRANCH})"
+  echo "  bind:        ${DASH_HOST}:${DASH_PORT}   gate: ${GATE_MODE}   tunnel: ${TUNNEL}"
+  echo "  LAB_TOKEN:   $([ -n "${LAB_TOKEN:-}" ] && echo set || echo MISSING)"
+  echo
+  echo "  dependencies:"
+  for c in claude node npm git gh cloudflared; do
+    if have "$c"; then printf '    %-12s %s\n' "$c" "$(command -v "$c")"; else printf '    %-12s (not found)\n' "$c"; fi
+  done
+  echo
+  echo "  repos:"
+  echo "    project:   $([ -d "$PROJECT/.git" ] && echo present || echo missing)"
+  echo "    notebook:  $([ -d "$NOTEBOOK/.git" ] && echo "present ($(git -C "$NOTEBOOK" rev-list --count HEAD 2>/dev/null || echo 0) entries)" || echo missing)"
+  echo
+  echo "  docket:"
+  for st in open claimed blocked done abandoned; do
+    printf '    %-10s %s\n' "$st" "$(_count "$DOCKET/$st")"
+  done
+  echo "  whiteboard questions open: $(_count "$WHITEBOARD/questions")   inbox pending: $(ls "$WHITEBOARD/inbox"/*.json 2>/dev/null | wc -l | tr -d ' ')"
+  echo
+  if [ -f "$DOTLAB/serve.pid" ] && kill -0 "$(cat "$DOTLAB/serve.pid")" 2>/dev/null; then
+    echo "  serve:       running (pid $(cat "$DOTLAB/serve.pid"))"
+  else
+    echo "  serve:       stopped"
+  fi
+  [ -f "$DOTLAB/tunnel-url" ] && echo "  tunnel url:  $(cat "$DOTLAB/tunnel-url")"
+}
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  init)   cmd_init "$@" ;;
+  status) cmd_status "$@" ;;
+  *) usage ;;
+esac

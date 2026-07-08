@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# bin/whiteboard — the human-decision channel. A worker raises ONE fixed-shape
+# question and returns (it never blocks); the human answers via the app; the
+# orchestrator drains answers back into the docket. Silent until a decision is
+# needed.
+#
+#   whiteboard ask --concern C --job J --raised-by ROLE --recommended "..." --body "<=80 words"
+#   whiteboard list
+#   whiteboard resolve <ask_id> [--answer "..."]
+#   whiteboard drain            # apply inbox replies: unblock jobs, resolve questions
+#
+# Reply files (written by the API) live in whiteboard/inbox/*.json as
+#   {"ask_id":"...","ts":"...","answer_b64":"<base64 of the human's answer>"}
+# base64 keeps arbitrary answer text safe for shell parsing (no jq needed).
+#
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+Q="$WHITEBOARD/questions"
+A="$WHITEBOARD/answered"
+IN="$WHITEBOARD/inbox"
+
+usage() { echo "usage: whiteboard ask|list|resolve|drain|reply ..." >&2; exit 2; }
+
+# extract a flat JSON string field: _json_str FILE KEY
+_json_str() {
+  sed -n 's/.*"'"$2"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -1
+}
+
+cmd_ask() {
+  local concern="" job="" raised_by="" recommended="" body="" body_file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --concern)     concern=$2; shift 2 ;;
+      --job)         job=$2; shift 2 ;;
+      --raised-by)   raised_by=$2; shift 2 ;;
+      --recommended) recommended=$2; shift 2 ;;
+      --body)        body=$2; shift 2 ;;
+      --body-file)   body_file=$2; shift 2 ;;
+      *) die "whiteboard ask: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$concern" ]     || die "whiteboard ask: --concern required"
+  [ -n "$recommended" ] || die "whiteboard ask: --recommended required (enable single-word sign-off)"
+  [ -n "$body" ] || { [ -n "$body_file" ] && body="$(cat "$body_file")"; }
+  [ -n "$body" ] || die "whiteboard ask: --body (the ambiguity, <=80 words) required"
+
+  mkdir -p "$Q"
+  local ask_id; ask_id="$(ts_id)-$(rand_element)"
+  local f="$Q/$ask_id.md"
+  {
+    echo "---"
+    echo "ask_id: $ask_id"
+    echo "concern: $concern"
+    echo "raised_by: ${raised_by:-unknown}"
+    echo "job: ${job:-}"
+    echo "recommended: \"$recommended\""
+    echo "ts: $(ts_iso)"
+    echo "status: open"
+    echo "---"
+    printf '%s\n' "$body"
+  } > "$f"
+
+  # Park the job so it is not garbage-collected while awaiting the answer.
+  if [ -n "$job" ]; then
+    "$LAB_ROOT/bin/docket" block "$job" --ask "$ask_id" >/dev/null 2>&1 || \
+      warn "whiteboard ask: could not block job $job (not claimed?)"
+  fi
+  printf '%s\n' "$ask_id"
+}
+
+cmd_list() {
+  local f
+  for f in "$Q"/*.md; do
+    [ -f "$f" ] || continue
+    printf '%-28s %-16s job=%-26s %s\n' \
+      "$(fm_get "$f" ask_id)" "$(fm_get "$f" concern)" "$(fm_get "$f" job)" "$(fm_get "$f" recommended)"
+  done
+}
+
+cmd_resolve() {
+  local ask_id=$1; shift || true
+  local answer=""
+  while [ $# -gt 0 ]; do case "$1" in --answer) answer=$2; shift 2 ;; *) die "whiteboard resolve: unknown arg '$1'" ;; esac; done
+  local f="$Q/$ask_id.md"
+  [ -f "$f" ] || die "whiteboard resolve: no open question $ask_id"
+  fm_set "$f" status resolved
+  [ -n "$answer" ] && { printf '\n---\nAnswer (%s): %s\n' "$(ts_iso)" "$answer" >> "$f"; }
+  mkdir -p "$A"
+  atomic_mv "$f" "$A/$ask_id.md" || mv "$f" "$A/$ask_id.md"
+  printf '%s\n' "$A/$ask_id.md"
+}
+
+# cmd_reply — write a human's answer into the inbox (the API calls this so ALL
+# writes go through bin/). Answer is base64-encoded for safe shell round-trips.
+cmd_reply() {
+  local ask_id="" answer=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ask)    ask_id=$2; shift 2 ;;
+      --answer) answer=$2; shift 2 ;;
+      *) die "whiteboard reply: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$ask_id" ] || die "whiteboard reply: --ask <ask_id> required"
+  mkdir -p "$IN"
+  local b64 f
+  b64="$(printf '%s' "$answer" | base64 | tr -d '\n')"
+  f="$IN/$(ts_id)-$ask_id.json"
+  printf '{"ask_id":"%s","ts":"%s","answer_b64":"%s"}\n' "$ask_id" "$(ts_iso)" "$b64" > "$f"
+  printf '%s\n' "$f"
+}
+
+cmd_drain() {
+  mkdir -p "$IN"
+  local rf ask_id answer job qf
+  local drained=0
+  for rf in "$IN"/*.json; do
+    [ -f "$rf" ] || continue
+    ask_id="$(_json_str "$rf" ask_id)"
+    answer="$(_json_str "$rf" answer_b64 | { base64 -d 2>/dev/null || base64 -D 2>/dev/null || cat; })"
+    if [ -z "$ask_id" ]; then warn "drain: reply $rf has no ask_id; skipping"; rm -f "$rf"; continue; fi
+
+    qf="$Q/$ask_id.md"
+    if [ -f "$qf" ]; then
+      job="$(fm_get "$qf" job)"
+    else
+      job=""
+      warn "drain: no open question for $ask_id (already resolved?)"
+    fi
+
+    # Unblock the job, folding the answer into its body.
+    if [ -n "$job" ] && [ -f "$DOCKET/blocked/$job.md" ]; then
+      "$LAB_ROOT/bin/docket" unblock "$job" --answer "$answer" >/dev/null || warn "drain: unblock $job failed"
+    fi
+    # Record the answer on the message bus for the director.
+    "$LAB_ROOT/bin/notebook" append --kind message --role coordinator --to director \
+      --job "$job" --slug "answer-$ask_id" \
+      --body "Human answered $ask_id (job ${job:-none}): $answer" >/dev/null || true
+    # Resolve the question and archive the reply.
+    [ -f "$qf" ] && cmd_resolve "$ask_id" --answer "$answer" >/dev/null || true
+    mkdir -p "$A"; mv "$rf" "$A/${ask_id}.reply.json" 2>/dev/null || rm -f "$rf"
+    drained=$((drained + 1))
+  done
+  echo "drained $drained"
+}
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  ask)     cmd_ask "$@" ;;
+  list)    cmd_list "$@" ;;
+  resolve) cmd_resolve "$@" ;;
+  drain)   cmd_drain "$@" ;;
+  reply)   cmd_reply "$@" ;;
+  *) usage ;;
+esac

@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# bin/wt — isolated worktrees for the target repo. One per live job.
+#
+#   wt prepare  <jobid> [--stage S] [--base REF]   # create worktrees/<jobid> on lab/<stage>/<jobid>
+#   wt teardown <jobid>                            # remove the worktree (branch + commits persist)
+#   wt reconcile                                   # prune leaked worktrees + stale markers
+#
+# NB: no stdin prompts. Ever.
+
+set -euo pipefail
+# shellcheck source=../lib/common.sh
+. "$(dirname "$0")/../lib/common.sh"
+
+usage() { echo "usage: wt prepare|teardown|reconcile ..." >&2; exit 2; }
+
+_require_project() {
+  [ -d "$PROJECT/.git" ] || die "wt: no project repo at $PROJECT (run 'bin/lab init' first)"
+}
+
+# Resolve a job's stage from the docket (any state), default to "build".
+_stage_of() {
+  local id=$1 st f s
+  for st in claimed blocked open done abandoned; do
+    f="$DOCKET/$st/$id.md"
+    if [ -f "$f" ]; then s="$(fm_get "$f" stage)"; [ -n "$s" ] && { printf '%s' "$s"; return; }; fi
+  done
+  printf 'build'
+}
+
+cmd_prepare() {
+  local id=$1; shift || true
+  local stage="" base=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stage) stage=$2; shift 2 ;;
+      --base)  base=$2; shift 2 ;;
+      *) die "wt prepare: unknown arg '$1'" ;;
+    esac
+  done
+  [ -n "$id" ] || die "wt prepare: <jobid> required"
+  _require_project
+  [ -n "$stage" ] || stage="$(_stage_of "$id")"
+
+  local wtpath="$WORKTREES/$id" branch="lab/$stage/$id"
+  [ -e "$wtpath" ] && die "wt prepare: $wtpath already exists (stale worktree? run 'bin/wt reconcile')"
+
+  git -C "$PROJECT" fetch origin --quiet 2>/dev/null || warn "wt prepare: fetch failed (offline?); using local refs"
+  if [ -z "$base" ]; then
+    if git -C "$PROJECT" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null; then
+      base="origin/$DEFAULT_BRANCH"
+    else
+      base="HEAD"
+    fi
+  fi
+
+  git -C "$PROJECT" worktree add -b "$branch" "$wtpath" "$base" --quiet \
+    || die "wt prepare: worktree add failed (branch $branch may already exist)"
+
+  mkdir -p "$DOTLAB/worktrees"
+  {
+    echo "jobid: $id"
+    echo "branch: $branch"
+    echo "stage: $stage"
+    echo "base: $base"
+    echo "created: $(ts_iso)"
+  } > "$DOTLAB/worktrees/$id"
+  printf '%s\n' "$wtpath"
+}
+
+cmd_teardown() {
+  local id=$1
+  [ -n "$id" ] || die "wt teardown: <jobid> required"
+  local wtpath="$WORKTREES/$id"
+  if [ -d "$wtpath" ]; then
+    git -C "$PROJECT" worktree remove --force "$wtpath" 2>/dev/null || rm -rf "$wtpath"
+  fi
+  rm -f "$DOTLAB/worktrees/$id" 2>/dev/null || true
+  git -C "$PROJECT" worktree prune 2>/dev/null || true
+  echo "torn down $id"
+}
+
+cmd_reconcile() {
+  [ -d "$PROJECT/.git" ] || { warn "wt reconcile: no project repo yet"; return 0; }
+  git -C "$PROJECT" worktree prune 2>/dev/null || true
+  local d id
+  # Remove worktree dirs with no live (claimed/blocked) job.
+  for d in "$WORKTREES"/*/; do
+    [ -d "$d" ] || continue
+    id="$(basename "$d")"
+    if [ ! -f "$DOCKET/claimed/$id.md" ] && [ ! -f "$DOCKET/blocked/$id.md" ]; then
+      warn "wt reconcile: removing leaked worktree $id"
+      git -C "$PROJECT" worktree remove --force "$d" 2>/dev/null || rm -rf "$d"
+      rm -f "$DOTLAB/worktrees/$id" 2>/dev/null || true
+    fi
+  done
+  git -C "$PROJECT" worktree prune 2>/dev/null || true
+  echo "reconciled"
+}
+
+[ $# -gt 0 ] || usage
+sub=$1; shift
+case "$sub" in
+  prepare)   cmd_prepare "$@" ;;
+  teardown)  cmd_teardown "$@" ;;
+  reconcile) cmd_reconcile "$@" ;;
+  *) usage ;;
+esac

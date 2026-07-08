@@ -105,6 +105,27 @@ Then:
 
 You interact via the apps and GitHub. Not the lab CLI.
 
+## Run in a container (one per repo)
+
+The lab is single-tenant: one checkout works one repo (its own `config.env`, `project/`, `notebook/`, `docket/`, `whiteboard/`, and port). To work several repos with full isolation, run each checkout in its own Docker container. `labctl` boxes the current checkout: one repo per checkout, one container per checkout. Claude Code runs inside.
+
+Requirements: Docker.
+
+```sh
+# one checkout per repo, each with its own config.env (unique DASH_PORT + REPO_SLUG + LAB_GH_*)
+./labctl build     # once: build the runtime image (node, yarn, git, gh, cloudflared, claude)
+./labctl up        # start the container, install deps on first run, enter Claude Code inside
+```
+
+Inside the container, if Claude asks you to sign in, run `claude` once (a device login that persists in this container's volume) or set `ANTHROPIC_API_KEY` before `up`. Then say **start the lab**. The apps are reachable on the host at `http://127.0.0.1:<DASH_PORT>/` (the port is mapped).
+
+Other commands: `./labctl serve` (start just the apps), `./labctl sh` (debug shell), `./labctl status`, `./labctl stop`, `./labctl rm` (removes the container and its `node_modules` + claude-login volumes; your files are untouched).
+
+Notes:
+- The image holds only the toolchain. This checkout is bind-mounted at `/lab`, so code edits need no rebuild.
+- Claude auth cannot cross from a macOS Keychain into a Linux container, so you log in once inside (or use `ANTHROPIC_API_KEY`). The lab's GitHub identity is still the bot token from `config.env`, not your account.
+- Give each checkout a unique `DASH_PORT` so two containers do not collide on the host.
+
 ## How it works
 
 - **Roles / skills / COMMON / designs.** [`roles/`](roles/) holds one brief per role (director, coordinator, researcher, theorist, technician, referee, debugger). [`skills/`](skills/) holds reusable procedures. `COMMON.md` is shared context forwarded to every worker. [`designs/`](designs/) holds design docs. These markdown files are the control surface that keeps the session on-model.

@@ -1,0 +1,3 @@
+# The image COPYs no code (labctl bind-mounts /lab), so keep the build context
+# tiny — nothing here needs to ship to the daemon.
+*

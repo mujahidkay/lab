@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# labctl — run THIS lab checkout inside its own Docker container.
+#
+# One repo per checkout, one container per checkout: to work two repos, make two
+# checkouts (each with its own config.env + DASH_PORT), and `./labctl up` in each.
+# The container holds only the toolchain; this checkout is bind-mounted at /lab,
+# so code edits need no rebuild. Claude Code runs INSIDE the container.
+#
+#   ./labctl build          build (or rebuild) the runtime image
+#   ./labctl up             start the container and enter Claude Code (the orchestrator)
+#   ./labctl serve          start the API + apps inside the container (background)
+#   ./labctl sh             open a shell in the container (debugging)
+#   ./labctl status         show the container + image state
+#   ./labctl stop           stop the container
+#   ./labctl rm             remove the container (keeps your files; drops node_modules + claude-login volumes)
+
+set -euo pipefail
+
+INSTANCE_PATH="$(cd "$(dirname "$0")" && pwd -P)"
+IMAGE="${LAB_IMAGE:-lab-runtime}"
+
+# Identity derived from the checkout location (distinct checkouts -> distinct containers).
+_base="$(basename "$INSTANCE_PATH" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-')"
+_hash="$(printf %s "$INSTANCE_PATH" | shasum 2>/dev/null | head -c 8)"
+NAME="lab-${_base:-lab}-${_hash:-0}"
+NM_VOL="${NAME}-node_modules"
+CLAUDE_VOL="${NAME}-claude"
+
+# Port to expose, from this checkout's config.env (default 8899). Give each
+# checkout a UNIQUE DASH_PORT so two instances do not collide on the host.
+PORT="$(grep -E '^DASH_PORT=' "$INSTANCE_PATH/config.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -cd '0-9')"
+PORT="${PORT:-8899}"
+
+die() { printf 'labctl: %s\n' "$*" >&2; exit 1; }
+_have_docker() { command -v docker >/dev/null 2>&1 || die "docker not found"; docker info >/dev/null 2>&1 || die "docker daemon not running"; }
+_image_exists() { docker image inspect "$IMAGE" >/dev/null 2>&1; }
+_container_exists() { docker container inspect "$NAME" >/dev/null 2>&1; }
+_running() { [ "$(docker container inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; }
+# exec inside as the lab user, in /lab, with the right HOME.
+_dexec() { docker exec -u lab -e HOME=/home/lab -w /lab "$@"; }
+
+cmd_build() {
+  _have_docker
+  echo "building $IMAGE (uid=$(id -u) gid=$(id -g)) ..."
+  docker build -t "$IMAGE" \
+    --build-arg LAB_UID="$(id -u)" \
+    --build-arg LAB_GID="$(id -g)" \
+    "$INSTANCE_PATH"
+}
+
+_ensure_up() {
+  _have_docker
+  _image_exists || cmd_build
+  if ! _container_exists; then
+    echo "creating container $NAME (port ${PORT}) ..."
+    docker create -it --name "$NAME" --hostname "$NAME" \
+      -v "$INSTANCE_PATH":/lab \
+      -v "$NM_VOL":/lab/node_modules \
+      -v "$CLAUDE_VOL":/home/lab/.claude \
+      -p "127.0.0.1:${PORT}:${PORT}" \
+      -e LAB_CONTAINER=1 \
+      ${ANTHROPIC_API_KEY:+-e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
+      "$IMAGE" >/dev/null
+  fi
+  _running || docker start "$NAME" >/dev/null
+}
+
+_ensure_deps() {
+  # Install node deps into the container-local node_modules volume on first run
+  # (host macOS node_modules must not leak in; native binaries differ).
+  if ! _dexec "$NAME" test -x /lab/node_modules/.bin/tsx 2>/dev/null; then
+    echo "installing dependencies inside the container (first run) ..."
+    _dexec "$NAME" bash -lc 'cd /lab && yarn install'
+  fi
+}
+
+cmd_up() {
+  _ensure_up
+  _ensure_deps
+  echo
+  echo "Entering Claude Code in $NAME. If it asks you to sign in, run:  claude  (device login persists in this container)."
+  echo "Once in, say:  start the lab"
+  echo
+  _dexec -it "$NAME" claude
+}
+
+cmd_serve() { _ensure_up; _ensure_deps; _dexec "$NAME" bin/serve start; }
+cmd_sh()    { _ensure_up; _dexec -it "$NAME" bash -l; }
+
+cmd_status() {
+  _have_docker
+  echo "instance:  $NAME"
+  echo "checkout:  $INSTANCE_PATH"
+  echo "image:     $IMAGE ($(_image_exists && echo built || echo 'not built'))"
+  echo "container: $(_container_exists && (_running && echo running || echo stopped) || echo 'not created')"
+  echo "port:      127.0.0.1:${PORT}"
+  echo "volumes:   ${NM_VOL}, ${CLAUDE_VOL}"
+}
+
+cmd_stop() { _have_docker; _container_exists && docker stop "$NAME" >/dev/null && echo "stopped $NAME" || echo "not running"; }
+cmd_rm()   {
+  _have_docker
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  docker volume rm "$NM_VOL" "$CLAUDE_VOL" >/dev/null 2>&1 || true
+  echo "removed container + volumes for $NAME (your files under $INSTANCE_PATH are untouched)"
+}
+
+[ $# -gt 0 ] || { echo "usage: ./labctl build|up|serve|sh|status|stop|rm" >&2; exit 2; }
+sub=$1; shift || true
+case "$sub" in
+  build)  cmd_build "$@" ;;
+  up)     cmd_up "$@" ;;
+  serve)  cmd_serve "$@" ;;
+  sh)     cmd_sh "$@" ;;
+  status) cmd_status "$@" ;;
+  stop)   cmd_stop "$@" ;;
+  rm)     cmd_rm "$@" ;;
+  *) echo "labctl: unknown command '$sub'" >&2; exit 2 ;;
+esac

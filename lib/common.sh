@@ -28,6 +28,10 @@ export DOCKET NOTEBOOK WHITEBOARD WORKTREES PROJECT DOTLAB
 # Defaults (config.env overrides these).
 : "${DASH_HOST:=127.0.0.1}"
 : "${DASH_PORT:=8787}"
+# Inside a container the published port maps to the container's external
+# interface, so the API must bind all interfaces. It stays localhost-only on the
+# host because labctl publishes with -p 127.0.0.1:PORT:PORT.
+[ "${LAB_CONTAINER:-}" = "1" ] && DASH_HOST=0.0.0.0
 : "${GATE_MODE:=solo}"
 : "${TUNNEL:=none}"
 : "${ACTIVE_MIN:=60}"

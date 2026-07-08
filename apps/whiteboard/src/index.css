@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: radial-gradient(1100px 640px at 50% -12%, #17171c 0%, #0a0a0b 58%) fixed;
+  color: #e4e4e7;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2a2a30; border-radius: 999px; }
+::-webkit-scrollbar-track { background: transparent; }
+@keyframes lab-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.animate-in { animation: lab-in 0.22s cubic-bezier(0.2, 0.7, 0.2, 1) both; }

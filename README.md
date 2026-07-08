@@ -112,11 +112,17 @@ The lab is single-tenant: one checkout works one repo (its own `config.env`, `pr
 Requirements: Docker.
 
 ```sh
-# one checkout per repo, each with its own config.env (unique DASH_PORT + REPO_SLUG + LAB_GH_*)
 ./labctl build     # once: build the runtime image (node, yarn, git, gh, cloudflared, claude)
-./labctl init      # first time for a checkout: fork + clone the target repo inside the container
+
+# One command per repo. labctl WRITES config.env for you from these env vars,
+# then forks + clones the target inside the container. Give each repo a unique DASH_PORT.
+REPO_SLUG=owner/repo LAB_GH_USER=my-lab-bot LAB_GH_TOKEN=ghp_xxx \
+  LAB_GH_EMAIL=ID+my-lab-bot@users.noreply.github.com DASH_PORT=8901 ./labctl init
+
 ./labctl up        # start the container, install deps on first run, enter Claude Code inside
 ```
+
+You do not hand-edit `config.env` first: `labctl init` seeds it from the environment (creating it from the example, merging what you pass) and writes it into the checkout (gitignored). A token on the command line lands in your shell history and `ps`, so prefer `export`-ing `LAB_GH_TOKEN` (ideally from a sourced secrets file) and `unset`-ing it afterward. Recognized vars: `REPO_SLUG DEFAULT_BRANCH LAB_GH_USER LAB_GH_TOKEN LAB_GH_EMAIL DASH_HOST DASH_PORT GATE_MODE TUNNEL CF_TUNNEL_NAME`.
 
 Inside the container, if Claude asks you to sign in, run `claude` once (a device login that persists in this container's volume) or set `ANTHROPIC_API_KEY` before `up`. Then say **start the lab**. The apps are reachable on the host at `http://127.0.0.1:<DASH_PORT>/` (the port is mapped).
 

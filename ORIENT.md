@@ -21,7 +21,7 @@ lab/
   whiteboard/      human-input app state: questions/ answered/ inbox/
   apps/            api/ whiteboard/ observatory/ (Node API + two web apps, one SSE feed)
   worktrees/       per-job isolated checkouts (worktrees/<jobid>, branch lab/<stage>/<jobid>)
-  project/         the target repo clone the lab works on
+  project/         a FORK the lab owns (WORK_SLUG), cloned here; the real upstream is a read-only `upstream` remote
   config.env       REPO_SLUG, LAB_TOKEN, pacing, gate mode (gitignored)
 ```
 
@@ -124,3 +124,6 @@ Standing watcher: `bin/watch` (background Bash task, surfaced via Monitor) appen
 Rule of thumb: task becomes a docket job, a job is assigned into a worktree, a worktree becomes a
 PR, a referee gates it, a coordinator merges it. Questions go to the whiteboard; watching is the
 observatory; memory is the notebook.
+
+Draft PRs live on the fork (base = the fork's own default branch) and NEVER target the upstream.
+Merge lands them into the fork's default branch; carrying anything upstream is a manual human step.

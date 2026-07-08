@@ -44,7 +44,7 @@ cmd_prepare() {
   local wtpath="$WORKTREES/$id" branch="lab/$stage/$id"
   [ -e "$wtpath" ] && die "wt prepare: $wtpath already exists (stale worktree? run 'bin/wt reconcile')"
 
-  git -C "$PROJECT" fetch origin --quiet 2>/dev/null || warn "wt prepare: fetch failed (offline?); using local refs"
+  git_auth -C "$PROJECT" fetch origin --quiet 2>/dev/null || warn "wt prepare: fetch failed (offline?); using local refs"
   if [ -z "$base" ]; then
     if git -C "$PROJECT" rev-parse --verify --quiet "origin/$DEFAULT_BRANCH" >/dev/null; then
       base="origin/$DEFAULT_BRANCH"

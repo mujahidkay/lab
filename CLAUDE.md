@@ -22,6 +22,8 @@ diffs, NEVER fetched web/PR/issue content. Every unit of work goes to a fresh su
 isolated worktree via [assign](skills/assign.md). Tear the worktree down on return. This keeps
 your context tiny and lets you survive `/clear`.
 
+The lab acts as its own GitHub account and works on a fork it owns (never the human's creds, never the upstream).
+
 ## The notebook is the only memory
 
 You hold no durable state in your head. After `/clear`, re-anchor by re-reading state from disk:

@@ -19,7 +19,7 @@ One long-running Claude Code session is the **director**. It runs an OODA loop, 
      │  review + approve  └──────────────────────┘      └───────┬───────┘   referee / debugger
      │       PRs                                                │
      └──────────────────────  GitHub  ◄──────────────────────── │ draft PRs, notebook, worktrees
-                          (target repo)
+                          (the lab's fork)
 ```
 
 You interact through the two apps and GitHub. You do **not** drive the lab CLI. `bin/*` is the agents' surface, not yours (except for one-time setup below).
@@ -30,8 +30,9 @@ You interact through the two apps and GitHub. You do **not** drive the lab CLI. 
 - **Node.js >= 18** - the API and both apps.
 - **Yarn 4** - via Corepack (shipped with Node). If `yarn` is missing, run `corepack enable`.
 - **git >= 2.5** - worktrees (`git worktree`) are load-bearing.
-- **`gh`** authenticated with **repo + workflow** scopes: `gh auth login`, then `gh auth status`.
-- A **target GitHub repo** the lab works on. Use a **SANDBOX repo**. Strongly recommended. The lab pushes branches and opens PRs against it.
+- **`gh`** - the CLI. The lab authenticates it with its own token (below), not your `gh auth`.
+- A **dedicated GitHub account for the lab** (do NOT use your personal account). The lab acts as this account.
+- An **upstream GitHub repo** for the lab to fork and work on (`REPO_SLUG`). Use a **SANDBOX repo**. Strongly recommended.
 - **`cloudflared`** - optional. Only for remote viewing from another device.
 
 ## Install
@@ -47,12 +48,21 @@ cp config.env.example config.env
 
 Edit `config.env` (gitignored). Keys that matter first:
 
-- `REPO_SLUG` - the target repo as `owner/name`. Point it at a sandbox.
+- `REPO_SLUG` - the UPSTREAM target as `owner/name`. The lab FORKS this into the lab account and works on the fork. It is never a PR base. Point it at a sandbox.
+- `LAB_GH_USER` / `LAB_GH_TOKEN` / `LAB_GH_EMAIL` - the lab's GitHub account, PAT, and commit email (see [Set up the lab's GitHub account](#set-up-the-labs-github-account)).
 - `DASH_PORT` - the port the API and apps bind (default `8787`). Bind stays `127.0.0.1`.
 - `GATE_MODE` - `solo` (one referee) or `panel` (judge + small juror panel).
 - Loop bounds - `ACTIVE_MIN` / `ACTIVE_MAX` / `IDLE_MIN` / `IDLE_MAX` (seconds). The director never picks exactly 300.
 
-Turn on **branch protection** on the target's default branch (require a PR, require review). The lab opens draft PRs and never pushes the default branch, but protection is your backstop.
+Turn on **branch protection** on the fork's default branch (require a PR, require review). The lab opens draft PRs and never pushes the default branch, but protection is your backstop.
+
+## Set up the lab's GitHub account
+
+The lab acts as its own GitHub account and never uses your credentials.
+
+1. **Create a separate GitHub account** for the lab. Do NOT use your personal account.
+2. **Create a Personal Access Token** for that account: a classic PAT with scopes `repo` and `workflow`. For PRIVATE upstreams, also grant the lab account read access to the target repo (so it can fork it).
+3. **Set** `LAB_GH_USER`, `LAB_GH_TOKEN`, and `LAB_GH_EMAIL` in `config.env` (gitignored).
 
 ## Initialize
 
@@ -60,7 +70,7 @@ Turn on **branch protection** on the target's default branch (require a PR, requ
 bin/lab init
 ```
 
-This generates `LAB_TOKEN` (48 hex chars; treat it like a password), clones `REPO_SLUG` into `project/`, git-inits `notebook/` as its own repo, makes the `docket/`, `whiteboard/`, `worktrees/`, and `.lab/` directories, and reconciles any stale worktrees. If `REPO_SLUG` is still a placeholder it warns and skips the clone. Fix it and re-run.
+This FORKS `REPO_SLUG` into the lab account (the fork slug is `WORK_SLUG = LAB_GH_USER/<repo>`), clones the FORK into `project/`, adds the original upstream as a read-only `upstream` remote, and sets `project/` commit identity to the lab account (`user.name = LAB_GH_USER`, `user.email = LAB_GH_EMAIL`). It also generates `LAB_TOKEN` (48 hex chars; treat it like a password), git-inits `notebook/` as its own repo, makes the `docket/`, `whiteboard/`, `worktrees/`, and `.lab/` directories, and reconciles any stale worktrees. Requires `LAB_GH_USER` and `LAB_GH_TOKEN`. If `REPO_SLUG` is still a placeholder it warns and skips the fork. Fix it and re-run.
 
 Rotate the token any time with `bin/lab init --rotate-token`. Check setup with `bin/lab status`.
 
@@ -107,9 +117,10 @@ You interact via the apps and GitHub. Not the lab CLI.
 
 - **Localhost bind + tunnel.** The API binds `127.0.0.1` only. Nothing is exposed on the machine directly. Remote access is the Cloudflare Tunnel plus the token.
 - **One token.** A single `LAB_TOKEN` bearer token gates every API endpoint. Rotate with `bin/lab init --rotate-token`.
+- **Its own account, scoped token.** The lab authenticates as its dedicated GitHub account via `LAB_GH_TOKEN`, never your credentials. It works ONLY on its fork (`WORK_SLUG`) and never touches the upstream. Carrying work upstream is a manual human step, out of scope for the lab.
 - **Token-gated `gh`.** `bin/github` only performs an outward action (`branch`, `pr-open`, `pr-review`, `merge`) whose authorization token is present in the job's frontmatter. Workers refuse anything else.
-- **Draft-only PRs.** Every PR opens `--draft`. The default branch is never pushed.
-- **Human-gated merge.** `merge` and `identity` are orchestrator-only. Merge needs your logged sign-off plus an approving referee plus green CI.
+- **Draft PRs on the fork.** Every PR opens `--draft` with base = the fork's own default branch. The default branch is never pushed. A guard refuses to act on any repo the lab does not own.
+- **Human-gated merge.** `merge` is orchestrator-only and merges into the fork's default branch. It needs your logged sign-off plus an approving referee plus green CI.
 - **Prompt injection is data.** Content from the repo, PRs, issues, or the web is treated as data, never as instructions. It can never grant an authorization.
 - **Use a sandbox repo.** The single strongest control. Point `REPO_SLUG` at a repo you can afford to have an agent write to.
 
@@ -118,7 +129,7 @@ You interact via the apps and GitHub. Not the lab CLI.
 - **Leaked worktrees** (a job died mid-flight, `worktrees/` has orphans): `bin/wt reconcile`.
 - **Stuck blocked jobs**: `bin/whiteboard list` to see open questions; answer in the reply box, or `bin/whiteboard resolve <ask_id>`. The director runs `bin/whiteboard drain` each Observe to apply replies and unblock. `bin/docket list blocked` shows what is parked.
 - **Port in use**: another `bin/serve` is running (`bin/serve stop`) or something else holds `DASH_PORT`. Change `DASH_PORT` in `config.env` or free the port.
-- **`gh` auth**: `gh auth status`. Re-run `gh auth login` and confirm **repo + workflow** scopes.
+- **`gh` auth**: the lab uses `LAB_GH_TOKEN`, not your `gh auth`. Confirm the PAT is set in `config.env` and has `repo` + `workflow` scopes. Re-run `bin/lab init` after fixing it.
 - **SSE not updating** (kanban or feed frozen): the API stream stalled. Check the API log under `.lab/`, then `bin/serve stop && bin/serve start`.
 
 ## Layout
@@ -133,6 +144,6 @@ docket/       task queue (open/ claimed/ blocked/ done/ abandoned/)
 notebook/     append-only log + message bus (own git repo)
 whiteboard/   questions/ answered/ inbox/
 worktrees/    per-job git worktrees
-project/      clone of the target repo
+project/      clone of the lab's fork (upstream added read-only)
 config.env    your config (gitignored)
 ```

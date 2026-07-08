@@ -36,6 +36,44 @@ export DOCKET NOTEBOOK WHITEBOARD WORKTREES PROJECT DOTLAB
 : "${IDLE_MAX:=3600}"
 : "${DEFAULT_BRANCH:=main}"
 
+# --- GitHub identity ---------------------------------------------------------
+# The lab acts as its OWN GitHub account (LAB_GH_USER via LAB_GH_TOKEN), never
+# the human's credentials. REPO_SLUG is the UPSTREAM target; the lab forks it
+# into LAB_GH_USER and works on that fork. WORK_SLUG is the fork; PRs always
+# target the fork, NEVER the upstream.
+REPO_NAME="${REPO_SLUG##*/}"
+if [ -n "${LAB_GH_USER:-}" ] && [ -n "${REPO_NAME:-}" ]; then
+  WORK_SLUG="$LAB_GH_USER/$REPO_NAME"
+else
+  WORK_SLUG="${REPO_SLUG:-}"
+fi
+export REPO_NAME WORK_SLUG
+
+# Run gh as the lab's account (token beats the human's keyring). Hard-requires
+# the token so an outward action can never fall back to the human's identity.
+gh_lab() {
+  [ -n "${LAB_GH_TOKEN:-}" ] || die "LAB_GH_TOKEN is not set in config.env (the lab needs its own GitHub account)"
+  GH_TOKEN="$LAB_GH_TOKEN" gh "$@"
+}
+
+# Run git authenticating as the lab account. The empty helper first clears any
+# inherited credential helpers (so the human's stored github.com creds are NOT
+# used); the token is expanded by the helper's shell at call time, never placed
+# in argv. Hard-requires the token.
+git_lab() {
+  [ -n "${LAB_GH_TOKEN:-}" ] || die "LAB_GH_TOKEN is not set in config.env"
+  LAB_GH_TOKEN="$LAB_GH_TOKEN" git \
+    -c credential.helper= \
+    -c 'credential.helper=!f() { echo username=x-access-token; echo "password=$LAB_GH_TOKEN"; }; f' \
+    "$@"
+}
+
+# git as the lab when a token is set, else plain git (for offline/local repos
+# and tests). Use for reads (fetch); use git_lab directly for pushes.
+git_auth() {
+  if [ -n "${LAB_GH_TOKEN:-}" ]; then git_lab "$@"; else git "$@"; fi
+}
+
 # ---------------------------------------------------------------------------
 # Small utilities
 # ---------------------------------------------------------------------------

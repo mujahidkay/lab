@@ -50,11 +50,11 @@ while :; do
     fi
   done
 
-  # 3) CI status for PRs referenced by active jobs (best-effort)
-  if have gh && [ -d "$PROJECT/.git" ]; then
+  # 3) CI status for PRs referenced by active jobs (best-effort, as the lab account)
+  if have gh && [ -n "${LAB_GH_TOKEN:-}" ] && [ -d "$PROJECT/.git" ]; then
     prs="$(grep -rho 'PR#[0-9]\{1,\}' "$DOCKET"/claimed "$DOCKET"/open "$DOCKET"/blocked 2>/dev/null | sed 's/PR#//' | sort -u)"
     for n in $prs; do
-      ( cd "$PROJECT" && gh pr checks "$n" >/dev/null 2>&1 ); rc=$?
+      ( cd "$PROJECT" && gh_lab pr checks "$n" >/dev/null 2>&1 ); rc=$?
       # gh exit codes: 0 all pass, 8 pending, other = failing.
       state=""
       case "$rc" in 0) state=pass ;; 8) state=pending ;; *) state=fail ;; esac

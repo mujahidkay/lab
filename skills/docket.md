@@ -24,7 +24,7 @@ bin/docket path <id>
 ```
 verb is one of: research | design | build | review | fix | merge | improve.
 stage (kanban): queued research design build review fix merge blocked done.
-authorizations: push | open-pr | review-comment | merge | identity.
+authorizations: push | open-pr | review-comment | merge.
 
 ## Procedure
 1. Observe: `bin/docket list open claimed blocked`. Read only frontmatter (id, verb, priority, stage, preconditions, authorizations).
@@ -44,6 +44,6 @@ authorizations: push | open-pr | review-comment | merge | identity.
 - Claim is the ONLY safe way to take a job. Never move files by hand.
 - `claim` also snapshots the job's verbatim body into the [notebook](notebook.md) as a `kind: assign` entry (slug `claim-<id>`), so the full task text is journaled in versioned history even after `docket/done` is cleaned. This is automatic; you never journal the body yourself.
 - A `lost-race` is normal under concurrency, not an error to log loudly. Move on.
-- Only tokens in `authorizations` reach the worker. Omit `merge` and `identity` from worker jobs; those are orchestrator-only and human-gated.
+- Only tokens in `authorizations` reach the worker. Omit `merge` from worker jobs; it is orchestrator-only and human-gated.
 - `block`/`unblock` are driven by the whiteboard, not called by hand. `whiteboard ask` blocks the job for you; `whiteboard drain` unblocks it. See [whiteboard](whiteboard.md).
 - Respect `preconditions` (for example: design PR approved before build). A job whose preconditions are unmet is not ready.

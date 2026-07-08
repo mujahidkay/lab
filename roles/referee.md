@@ -10,7 +10,7 @@ A worker subagent in a fresh context, inside the WORKING DIR only. Independent a
 
 - [../COMMON.md](../COMMON.md) - completion contract (read first).
 - [panel](../skills/panel.md) - the review procedure; solo vs panel per `GATE_MODE`.
-- `bin/github pr-review` - post review comments (needs `review-comment`; see [authorization](../designs/authorization.md)).
+- `bin/github pr-review` - review the PR on the fork (needs `review-comment`; see [authorization](../designs/authorization.md)).
 - [notebook](../skills/notebook.md) · [whiteboard](../skills/whiteboard.md) · [worktree](../skills/worktree.md)
 - Designs: [github-flow](../designs/github-flow.md) - the referee gate, solo vs panel per `GATE_MODE`.
 
@@ -20,8 +20,8 @@ A worker subagent in a fresh context, inside the WORKING DIR only. Independent a
 2. Review against the bar:
    - Design PR: does it solve the task, fit repo conventions, name edge cases and a test plan, and stay in scope?
    - Impl PR: does it match the approved design, follow repo style, pass the repo's checks, cover edge cases, and avoid scope creep? Re-run the checks in the WORKING DIR where possible.
-3. Post specific, actionable comments on the PR: `bin/github pr-review --comment "..."` (runs only because [AUTHORIZATIONS] carries `review-comment`).
-4. Decide the verdict. `approve` only if the bar is met with no required changes; otherwise `revise` with a concrete, enumerated list of what must change.
+3. Post specific, actionable comments on the fork PR: `bin/github pr-review --job <jobid> --pr <N> --event comment --body "..."` (runs only because [AUTHORIZATIONS] carries `review-comment`).
+4. Decide the verdict. `approve` only if the bar is met with no required changes; otherwise `revise` with a concrete, enumerated list of what must change. Record the decision on the PR with `bin/github pr-review --job <jobid> --pr <N> --event approve|request-changes --body "..."`.
 5. On `revise`, post a `fix` job on the SAME branch: `bin/docket post --verb fix --title "fix: <task>" --target <target> --eligible debugger --authorizations "push" --refs "<branch>,<PR-url>" --preconditions "review:<jobid> done" --body "address referee feedback:\n<enumerated items>"`.
 6. `result` carries the verdict: `bin/notebook append --kind result --role referee --job <jobid> --stage review --status <approve|revise> --refs "<branch>,<PR-url>" --body "verdict + reasons"`.
 7. Lesson: `bin/notebook append --kind message --role referee --to director --body "lesson: <one improvement>"`.
@@ -35,4 +35,4 @@ A worker subagent in a fresh context, inside the WORKING DIR only. Independent a
 
 ## Definition of done
 
-The PR has actionable review comments; a `result` (stage review) records `status:approve` or `status:revise`; on `revise` a `fix` job is posted on the same branch with an enumerated change list and a precondition on this review; a lesson `message` to director exists.
+The fork PR has actionable review comments and a recorded verdict (approve or request-changes) via `bin/github pr-review`; a `result` (stage review) records `status:approve` or `status:revise`; on `revise` a `fix` job is posted on the same branch with an enumerated change list and a precondition on this review; a lesson `message` to director exists.

@@ -53,16 +53,35 @@ cmd_init() {
            "$WHITEBOARD"/{questions,answered,inbox} \
            "$WORKTREES" "$DOTLAB"
 
-  # clone target
-  if [ -d "$PROJECT/.git" ]; then
-    echo "project/ already present ($(git -C "$PROJECT" remote get-url origin 2>/dev/null || echo 'no origin'))"
+  # Resolve the lab's own GitHub identity and working fork, then clone the FORK.
+  if [ -z "${LAB_GH_USER:-}" ] || [ -z "${LAB_GH_TOKEN:-}" ]; then
+    warn "LAB_GH_USER / LAB_GH_TOKEN not set. The lab needs its OWN GitHub account."
+    warn "Create the account + a PAT (scopes: repo, workflow), set LAB_GH_USER/LAB_GH_TOKEN/LAB_GH_EMAIL in config.env, then re-run 'bin/lab init'."
   elif _placeholder_repo; then
-    warn "REPO_SLUG is a placeholder ('${REPO_SLUG:-unset}') — edit config.env, then re-run 'bin/lab init' to clone"
-  elif have gh; then
-    echo "cloning $REPO_SLUG into project/ ..."
-    gh repo clone "$REPO_SLUG" "$PROJECT" -- --quiet || die "clone failed"
+    warn "REPO_SLUG is a placeholder ('${REPO_SLUG:-unset}'). Set it to the upstream target, then re-run 'bin/lab init'."
+  elif ! have gh; then
+    warn "gh not found — install the GitHub CLI, then re-run 'bin/lab init'."
   else
-    warn "gh not found — clone $REPO_SLUG into project/ manually"
+    local who; who="$(gh_lab api user -q .login 2>/dev/null || echo '?')"
+    [ "$who" = "$LAB_GH_USER" ] || warn "token identity is '$who' but LAB_GH_USER is '$LAB_GH_USER' (mismatch?)"
+
+    if [ "${REPO_SLUG%%/*}" = "$LAB_GH_USER" ]; then
+      echo "lab already owns $REPO_SLUG; using it directly as the working repo"
+    else
+      echo "ensuring fork $WORK_SLUG of $REPO_SLUG ..."
+      gh_lab repo fork "$REPO_SLUG" --clone=false >/dev/null 2>&1 || warn "fork step reported an issue (already forked?)"
+    fi
+
+    if [ -d "$PROJECT/.git" ]; then
+      echo "project/ already present ($(git -C "$PROJECT" remote get-url origin 2>/dev/null))"
+    else
+      echo "cloning fork $WORK_SLUG into project/ ..."
+      git_lab clone "https://github.com/$WORK_SLUG.git" "$PROJECT" || die "clone failed (fork not ready yet, or token invalid?)"
+    fi
+    git -C "$PROJECT" remote get-url upstream >/dev/null 2>&1 || git -C "$PROJECT" remote add upstream "https://github.com/$REPO_SLUG.git"
+    git -C "$PROJECT" config user.name "$LAB_GH_USER"
+    git -C "$PROJECT" config user.email "${LAB_GH_EMAIL:-$LAB_GH_USER@users.noreply.github.com}"
+    echo "working repo: $WORK_SLUG (fork)   upstream: $REPO_SLUG (never a PR base)"
   fi
 
   [ -d "$PROJECT/.git" ] && bin_reconcile
@@ -76,9 +95,11 @@ _count() { ls "$1"/*.md >/dev/null 2>&1 && ls "$1"/*.md | wc -l | tr -d ' ' || e
 cmd_status() {
   echo "lab status"
   echo "  root:        $LAB_ROOT"
-  echo "  target:      ${REPO_SLUG:-<unset>}  (default branch: ${DEFAULT_BRANCH})"
+  echo "  upstream:    ${REPO_SLUG:-<unset>}  (default branch: ${DEFAULT_BRANCH}; never a PR base)"
+  echo "  working fork: ${WORK_SLUG:-<unset>}"
+  echo "  lab account: ${LAB_GH_USER:-<unset>}   gh token: $([ -n "${LAB_GH_TOKEN:-}" ] && echo set || echo MISSING)"
   echo "  bind:        ${DASH_HOST}:${DASH_PORT}   gate: ${GATE_MODE}   tunnel: ${TUNNEL}"
-  echo "  LAB_TOKEN:   $([ -n "${LAB_TOKEN:-}" ] && echo set || echo MISSING)"
+  echo "  dash token:  $([ -n "${LAB_TOKEN:-}" ] && echo set || echo MISSING)"
   echo
   echo "  dependencies:"
   for c in claude node yarn git gh cloudflared; do

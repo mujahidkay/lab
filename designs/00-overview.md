@@ -63,7 +63,7 @@ Never self-terminate. See [ooda-loop](ooda-loop.md).
 ## Boundaries
 
 - Authorization is by token. A worker takes no outward action whose token is absent from its
-  job. `merge` and `identity` are orchestrator-only and human-gated. See
+  job. `merge` is orchestrator-only and human-gated. See
   [authorization](authorization.md).
 - GitHub flow keeps design and impl in separate DRAFT PRs behind an independent referee gate and
   a human merge. See [github-flow](github-flow.md).

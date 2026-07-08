@@ -36,7 +36,7 @@ Each cycle runs these five steps in order.
    - On a subagent return: read the short `result` only; `bin/docket complete <id> --result <path>` (or `bin/docket abandon <id> --reason "..."`); `bin/wt teardown <id>`.
    - Otherwise claim the highest-priority ready job whose `preconditions` are met: `bin/docket claim <id> --role <eligible_role>` (skip on `lost-race`); `bin/wt prepare <id> --stage <stage>`; then assign via the Agent tool per [assign](../skills/assign.md).
    - Respect `preconditions`. Do not claim a job whose predecessor is not `done`.
-   - Merge and identity are human-gated: hand `merge` jobs to the [coordinator](coordinator.md) posture; never originate an `identity` switch.
+   - Merge is human-gated: hand `merge` jobs to the [coordinator](coordinator.md) posture. There is no upstream identity switch; the lab always acts as its own account on its own fork.
 
 4. Log. `bin/notebook append --kind tick --role director` with a one-line summary of what this cycle observed and did.
 

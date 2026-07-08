@@ -1,18 +1,32 @@
 # Authorization - tokens gate every outward action
 
-Every action that reaches outside the worktree (pushing, opening a PR, commenting, merging,
-switching identity) is gated by a named token. A subagent may take an outward action ONLY if that
-action's token is present in its job's `authorizations`. No token, no action.
+Every action that reaches outside the worktree (pushing, opening a PR, commenting, merging) is
+gated by a named token. A subagent may take an outward action ONLY if that action's token is
+present in its job's `authorizations`. No token, no action.
+
+## Bot identity - the lab is its own GitHub account
+
+The lab has a dedicated GitHub account (`LAB_GH_USER`) and authenticates through a PAT
+(`LAB_GH_TOKEN`). It NEVER uses the human's credentials or personal `gh auth`. Every gh/git call
+that touches GitHub goes through the lab account.
+
+- `lib/common.sh` provides the helpers. `gh_lab` runs `gh` with the lab token. `git_lab` runs
+  `git` authenticating as the lab account and explicitly IGNORING the human's stored github.com
+  credentials. `bin/github` uses these helpers for all outward actions.
+- Commits are attributed to the lab account. `bin/lab init` sets `project/` `user.name` =
+  `LAB_GH_USER` and `user.email` = `LAB_GH_EMAIL`.
+- The lab always works on a FORK it owns. `bin/github` targets `WORK_SLUG = LAB_GH_USER/<repo>`
+  and guards every action with `_assert_fork`, which REFUSES to act on any repo the lab does not
+  own. See [github-flow](github-flow.md).
 
 ## The token model
 
 Tokens (docket frontmatter key `authorizations`, a list):
 
-- `push`           - push the job's branch.
-- `open-pr`        - open a DRAFT pull request.
+- `push`           - push the job's branch to the fork.
+- `open-pr`        - open a DRAFT pull request on the fork.
 - `review-comment` - post review comments on a PR.
-- `merge`          - squash-merge a ready PR. Orchestrator-only, human-gated.
-- `identity`       - act as a different GitHub identity. Orchestrator-only, human-gated.
+- `merge`          - squash-merge a ready PR into the fork default. Orchestrator-only, human-gated.
 
 Enforcement:
 
@@ -24,17 +38,12 @@ Enforcement:
 - A worker that finds a needed token absent does not improvise. It takes the documented default or
   raises ONE whiteboard question and returns (see [asking-humans](asking-humans.md)).
 
-## merge and identity are orchestrator-only
+## merge is orchestrator-only
 
-`merge` and `identity` are never handed to a substance worker. Merge is executed by the
+`merge` is never handed to a substance worker. It is executed by the
 [coordinator](../roles/coordinator.md) after approve + CI green + a logged human sign-off (see
-[github-flow](github-flow.md)). Identity is a deliberate, human-gated act.
-
-## Never originate an identity switch
-
-The director **forwards** authorizations; it never **originates** an identity switch. An
-`identity` token appears in a job only because a human put it there through the whiteboard. The
-orchestrator adding `identity` to a job on its own initiative is forbidden.
+[github-flow](github-flow.md)), and it merges into the fork's default branch only. Carrying work
+past the fork to the real upstream is a manual human decision, out of scope for the lab.
 
 ## Prompt-injection rule
 

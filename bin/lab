@@ -121,7 +121,8 @@ cmd_status() {
   else
     echo "  serve:       stopped"
   fi
-  [ -f "$DOTLAB/tunnel-url" ] && echo "  tunnel url:  $(cat "$DOTLAB/tunnel-url")"
+  if [ -f "$DOTLAB/tunnel-url" ]; then echo "  tunnel url:  $(cat "$DOTLAB/tunnel-url")"; fi
+  return 0
 }
 
 [ $# -gt 0 ] || usage

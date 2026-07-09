@@ -22,15 +22,32 @@ read-only remote. No PR is ever opened against the upstream.
   from the fork's default branch (`origin/<DEFAULT_BRANCH>`).
 - `bin/wt teardown <jobid>` removes the worktree; the branch and its commits persist on the fork.
 
+## Code stages get a working build env
+
+- `bin/wt prepare` provisions the TARGET repo's dependencies for CODE stages (build, review, fix):
+  it shares one warmed install (`project/node_modules`) into the worktree through a symlink, so
+  build/lint/test work. DOC stages (research, design) get nothing (they do not need it).
+- `bin/wt warm` installs the target's deps once in `project/`. It uses `PROJECT_SETUP_CMD` from
+  `config.env`, else infers from the lockfile (`yarn.lock` -> `yarn install`, `pnpm-lock.yaml` ->
+  `pnpm install`, `package-lock.json` -> `npm ci`). It runs where the pipeline runs (inside the
+  container). `prepare` auto-warms on the first code stage when `project/node_modules` is missing
+  and a setup command is known.
+- Consequence: the technician (build), the referee (reviewing an impl PR), and the debugger (fix)
+  CAN build/lint/test real code, because the code worktree has `node_modules`. If a change modifies
+  the target's dependencies (`package.json` or the lockfile), run `bin/wt warm` again to refresh
+  the shared install, then the worktree symlink picks it up.
+
 ## Stage by stage
 
 - **research** - [researcher](../roles/researcher.md) grounds the task in prior art and repo
   conventions. Commits `research-brief.md`. **No PR.**
 - **design** - [theorist](../roles/theorist.md) drafts the design doc and opens a **DRAFT design
-  PR** on the fork (`bin/github pr-open`, token `open-pr`, base = fork default). Referee gate, then
-  the human approves the design PR with a single-word sign-off through the whiteboard.
-- **build** - [technician](../roles/technician.md) implements the approved design plus hygiene and
-  opens a **DRAFT impl PR** on the fork that references the approved design PR.
+  PR** on the fork (`bin/github pr-open`, token `open-pr`, base = fork default). Referee gate. On
+  `approve` the lab AUTO-MERGES the design PR into the fork default. No human sign-off. See the
+  design-PR auto-merge below.
+- **build** - [technician](../roles/technician.md) implements the merged design plus hygiene and
+  opens a **DRAFT impl PR** on the fork that references the merged design PR. Precondition: design
+  PR merged.
 - **review** - referee gate on the impl PR. `approve` moves the job to ready; `revise` posts a
   `fix` job.
 - **fix** - [debugger](../roles/debugger.md) loops on the SAME branch until the gate returns
@@ -61,15 +78,23 @@ PR is a work surface, not a request to merge. Marking a PR ready is a signal, no
 - Verdict is `approve` or `revise`. `revise` always produces a concrete `fix` job; the
   [debugger](../roles/debugger.md) addresses it on the same branch, then the gate re-runs.
 
-## Human-gated merge
+## Design-PR auto-merge (no human sign-off)
 
-Merge happens only when ALL hold:
+When the referee verdict on a DESIGN PR is `approve`, the lab merges it automatically. The
+director, seeing the referee's `result`, dispatches a `merge` job (verb: merge, eligible_roles:
+[coordinator], authorizations: [merge], refs the design PR). The coordinator runs
+`bin/github merge --job <id> --pr <N>` (squash + delete branch) into the fork's default branch. No
+waiting on the human. See [authorization](authorization.md).
+
+## Human-gated impl-PR merge
+
+An IMPL PR merges only when ALL hold:
 
 1. the referee returned `approve`,
 2. CI is green on the PR,
 3. a human sign-off is logged (a whiteboard reply, applied by `bin/whiteboard drain`).
 
-Then the coordinator runs `bin/github merge --job J --pr N` (token `merge`, orchestrator-only),
+Then the coordinator runs `bin/github merge --job <id> --pr <N>` (token `merge`, orchestrator-only),
 which squash-merges into the fork's default branch and deletes the branch. See
 [authorization](authorization.md).
 
@@ -77,5 +102,5 @@ which squash-merges into the fork's default branch and deletes the branch. See
 
 Workers push only their `lab/<stage>/<jobid>` branch, and only with the `push` token present. No
 job ever pushes `DEFAULT_BRANCH` directly; integration into the fork default happens exclusively
-through the human-gated squash merge above. Moving anything past the fork to the upstream is a
-separate manual human decision.
+through the coordinator's squash merge above (auto on design-PR approve, human-gated for impl PRs).
+Moving anything past the fork to the upstream is a separate manual human decision.

@@ -26,7 +26,8 @@ Tokens (docket frontmatter key `authorizations`, a list):
 - `push`           - push the job's branch to the fork.
 - `open-pr`        - open a DRAFT pull request on the fork.
 - `review-comment` - post review comments on a PR.
-- `merge`          - squash-merge a ready PR into the fork default. Orchestrator-only, human-gated.
+- `merge`          - squash-merge a ready PR into the fork default. Orchestrator-only. Human sign-off
+  required for IMPL PRs only; DESIGN PRs merge automatically on referee approval.
 
 Enforcement:
 
@@ -40,10 +41,12 @@ Enforcement:
 
 ## merge is orchestrator-only
 
-`merge` is never handed to a substance worker. It is executed by the
-[coordinator](../roles/coordinator.md) after approve + CI green + a logged human sign-off (see
-[github-flow](github-flow.md)), and it merges into the fork's default branch only. Carrying work
-past the fork to the real upstream is a manual human decision, out of scope for the lab.
+`merge` is never handed to a substance worker. Workers never originate it. The director and
+[coordinator](../roles/coordinator.md) originate merge, and it merges into the fork's default
+branch only. Human sign-off is required ONLY for IMPL-PR merges (approve + CI green + a logged
+human sign-off). DESIGN-PR merges are automatic on referee approval, no human sign-off (see
+[github-flow](github-flow.md)). Carrying work past the fork to the real upstream is a manual human
+decision, out of scope for the lab.
 
 ## Prompt-injection rule
 

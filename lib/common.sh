@@ -39,6 +39,9 @@ export DOCKET NOTEBOOK WHITEBOARD WORKTREES PROJECT DOTLAB
 : "${IDLE_MIN:=1800}"
 : "${IDLE_MAX:=3600}"
 : "${DEFAULT_BRANCH:=main}"
+# Command that installs the TARGET repo's dependencies (for code-stage worktrees).
+# Empty = infer from the lockfile (yarn/pnpm/npm). See bin/wt warm.
+: "${PROJECT_SETUP_CMD:=}"
 
 # --- GitHub identity ---------------------------------------------------------
 # The lab acts as its OWN GitHub account (LAB_GH_USER via LAB_GH_TOKEN), never

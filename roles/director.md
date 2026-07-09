@@ -36,7 +36,9 @@ Each cycle runs these five steps in order.
    - On a subagent return: read the short `result` only; `bin/docket complete <id> --result <path>` (or `bin/docket abandon <id> --reason "..."`); `bin/wt teardown <id>`.
    - Otherwise claim the highest-priority ready job whose `preconditions` are met: `bin/docket claim <id> --role <eligible_role>` (skip on `lost-race`); `bin/wt prepare <id> --stage <stage>`; then assign via the Agent tool per [assign](../skills/assign.md).
    - Respect `preconditions`. Do not claim a job whose predecessor is not `done`.
-   - Merge is human-gated: hand `merge` jobs to the [coordinator](coordinator.md) posture. There is no upstream identity switch; the lab always acts as its own account on its own fork.
+   - Auto-merge design PRs: when a referee `result` approves a DESIGN PR, dispatch a `merge` job WITHOUT human sign-off (post it: verb `merge`, eligible `[coordinator]`, authorizations `[merge]`, refs the design PR). The [coordinator](coordinator.md) runs it immediately; do not wait on the human.
+   - Impl PRs stay human-gated: when a referee `result` approves an IMPL PR, do NOT auto-merge. Surface it for sign-off (route through the [coordinator](coordinator.md)) and only dispatch the `merge` job after the human signs off.
+   - `merge` is orchestrator-only (workers never originate it). Hand `merge` jobs to the [coordinator](coordinator.md) posture. There is no upstream identity switch; the lab always acts as its own account on its own fork.
 
 4. Log. `bin/notebook append --kind tick --role director` with a one-line summary of what this cycle observed and did.
 

@@ -2,7 +2,7 @@
   "name": "lab",
   "private": true,
   "version": "0.1.0",
-  "description": "A lab of autonomous coding agents — a simpler, faithful clone of kriskowal/garden.",
+  "description": "A lab of autonomous coding agents that work a GitHub repo on their own, driven from a web dashboard.",
   "workspaces": [
     "packages/*",
     "apps/*"

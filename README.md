@@ -1,6 +1,6 @@
 # lab
 
-A fleet of autonomous coding agents. A simpler, faithful clone of [kriskowal/garden](https://github.com/kriskowal/garden).
+A fleet of autonomous coding agents that work a GitHub repo on their own, asking you for input only through a web dashboard.
 
 ## What the lab is
 

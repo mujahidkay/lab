@@ -16,7 +16,7 @@ set -euo pipefail
 # shellcheck source=../lib/common.sh
 . "$(dirname "$0")/../lib/common.sh"
 
-usage() { echo "usage: github branch|pr-open|pr-review|merge --job <id> ..." >&2; exit 2; }
+usage() { echo "usage: github branch|pr-open|pr-review|merge|sync --job <id> ..." >&2; exit 2; }
 
 # require_auth JOB TOKEN — die unless TOKEN is in the job's authorizations list.
 require_auth() {
@@ -91,6 +91,22 @@ cmd_pr_review() {
   gh_lab pr review "$pr" $flag --body "${body:-}" --repo "$WORK_SLUG"
 }
 
+# Refresh the local project/ from the fork as the lab account. Raw `git fetch`
+# in project/ has NO credentials (only these wrappers do), so use this after a
+# merge and whenever the orchestrator needs the true default-branch state.
+_sync_project() {
+  [ -d "$PROJECT/.git" ] || { warn "github sync: no project repo"; return 0; }
+  git_lab -C "$PROJECT" fetch origin --quiet 2>/dev/null || { warn "github sync: fetch failed"; return 1; }
+  local cur; cur="$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
+  if [ "$cur" = "$DEFAULT_BRANCH" ]; then
+    git -C "$PROJECT" merge --ff-only "origin/$DEFAULT_BRANCH" --quiet 2>/dev/null \
+      || warn "github sync: local $DEFAULT_BRANCH not fast-forwardable (diverged); worktrees still base off origin/$DEFAULT_BRANCH"
+  fi
+  echo "synced: origin/$DEFAULT_BRANCH at $(git -C "$PROJECT" rev-parse --short "origin/$DEFAULT_BRANCH" 2>/dev/null || echo '?')"
+}
+
+cmd_sync() { _sync_project; }
+
 cmd_merge() {
   local job="" pr=""
   while [ $# -gt 0 ]; do case "$1" in --job) job=$2; shift 2 ;; --pr) pr=$2; shift 2 ;; *) die "github merge: unknown arg '$1'" ;; esac; done
@@ -99,6 +115,9 @@ cmd_merge() {
   _require_gh; _assert_fork
   gh_lab pr merge "$pr" --squash --delete-branch --repo "$WORK_SLUG"
   echo "merged PR $pr"
+  # Pull the merge into the local project so the next build branches off the
+  # real merged default branch, not a stale local copy.
+  _sync_project || true
 }
 
 [ $# -gt 0 ] || usage
@@ -108,5 +127,6 @@ case "$sub" in
   pr-open)   cmd_pr_open "$@" ;;
   pr-review) cmd_pr_review "$@" ;;
   merge)     cmd_merge "$@" ;;
+  sync)      cmd_sync "$@" ;;
   *) usage ;;
 esac

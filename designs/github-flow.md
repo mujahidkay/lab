@@ -86,6 +86,11 @@ director, seeing the referee's `result`, dispatches a `merge` job (verb: merge, 
 `bin/github merge --job <id> --pr <N>` (squash + delete branch) into the fork's default branch. No
 waiting on the human. See [authorization](authorization.md).
 
+`bin/github merge` then runs `bin/github sync` so the local `project/` fast-forwards to the merged
+default branch. The next build branches off the real merged main (`bin/wt prepare` also fetches with
+auth). Never inspect `project/` with raw `git fetch`/`git pull`: the orchestrator shell has no GitHub
+credentials, so it reports a stale branch. Use `bin/github sync`.
+
 ## Human-gated impl-PR merge
 
 An IMPL PR merges only when ALL hold:

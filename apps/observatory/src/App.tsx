@@ -11,7 +11,7 @@ const STAGE_ACCENT: Record<Stage, string> = {
   merge: 'bg-emerald-400', blocked: 'bg-red-400', done: 'bg-zinc-600',
 };
 const KIND_COLOR: Record<string, string> = {
-  assign: 'text-indigo-300 bg-indigo-400/10', tick: 'text-zinc-400 bg-white/5',
+  assign: 'text-indigo-300 bg-indigo-400/10', tick: 'text-zinc-500',
   result: 'text-emerald-300 bg-emerald-400/10', message: 'text-sky-300 bg-sky-400/10',
   worktree: 'text-violet-300 bg-violet-400/10',
 };
@@ -42,7 +42,7 @@ export default function App() {
       <Header />
       <FleetBar state={state} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div className="min-h-0 flex-1 overflow-x-auto">
+        <div className="min-h-0 min-w-0 flex-1 overflow-x-auto">
           <div className="flex h-full gap-3 p-4">
             {columns.map((s) => (
               <Column key={s} stage={s} jobs={jobs.filter((j) => j.stage === s)}
@@ -135,7 +135,7 @@ function LiveFeed({ entries, focus, onClear }:
 { entries: NotebookEntry[]; focus: string | null; onClear: () => void }) {
   const shown = focus ? entries.filter((e) => e.job === focus) : entries;
   return (
-    <aside className="flex min-h-0 w-full flex-col border-t border-white/5 lg:w-96 lg:border-l lg:border-t-0">
+    <aside className="flex min-h-0 w-full flex-col border-t border-white/5 lg:w-96 lg:shrink-0 lg:border-l lg:border-t-0">
       <div className="flex items-center gap-2 px-4 py-2.5">
         <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">Live feed</span>
         {focus && (
@@ -158,7 +158,7 @@ function FeedRow({ e }: { e: NotebookEntry }) {
     <div className="animate-in rounded-lg px-2 py-1.5 hover:bg-white/[0.03]">
       <div className="flex items-center gap-2 text-[11px]">
         <span className="mono text-zinc-600">{timeOf(e.ts)}</span>
-        <span className={`rounded px-1.5 py-0.5 font-medium ${KIND_COLOR[e.kind] ?? 'bg-white/5 text-zinc-400'}`}>{e.kind}</span>
+        <span className={`rounded px-1.5 py-0.5 font-medium ${KIND_COLOR[e.kind] ?? 'text-zinc-500'}`}>{e.kind}</span>
         <span className="text-zinc-400">{e.role}{e.to ? ` → ${e.to}` : ''}</span>
         {e.stage && <span className="ml-auto text-zinc-600">{e.stage}</span>}
       </div>

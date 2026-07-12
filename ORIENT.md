@@ -6,8 +6,15 @@ session the orchestrator), then [COMMON.md](COMMON.md) (the rules), then this fi
 
 ## Directory layout
 
+The tree splits into a **code root** (`LAB_ROOT`: shared code + docs) and a **state root**
+(`LAB_STATE`: the mutable per-instance state). State resolution (see `lib/common.sh`, mirrored by
+`stateRoot()` in `packages/shared`): if `LAB_STATE` is set use it; else if `LAB_INSTANCE` is set
+use `LAB_ROOT/instances/<LAB_INSTANCE>`; else the state root IS the code root (the flat layout you
+get running directly, no container). Under `labctl` each instance runs with `LAB_INSTANCE` set, so
+its state lives at `instances/<name>/`.
+
 ```
-lab/
+lab/                 --- code root (LAB_ROOT): shared across all instances ---
   CLAUDE.md        auto-loaded orchestrator bootstrap (re-anchor after /clear)
   ORIENT.md        this file - inventory + flow
   COMMON.md        standing rules, prepended into every dispatch
@@ -15,11 +22,15 @@ lab/
   skills/          reusable procedures (assign, docket, notebook, whiteboard, worktree, panel, lesson)
   designs/         approved design docs; technicians build against these
   bin/             the control surface: docket notebook whiteboard wt lab serve github watch
-  lib/             shared shell helpers
-  docket/          task queue: open/ claimed/ blocked/ done/ abandoned/
-  notebook/        append-only log + message bus (its own git repo; the only durable memory)
-  whiteboard/      human-input app state: questions/ answered/ inbox/
+  lib/             shared shell helpers (common.sh splits code root from state root)
   apps/            api/ whiteboard/ observatory/ (Node API + two web apps, one SSE feed)
+  labctl           Docker wrapper: one container per named instance
+  instances/       per-instance state roots live here under labctl (instances/<name>/, same shape as below)
+
+                   --- state root (LAB_STATE): per instance; flat here when run directly ---
+  docket/          task queue: open/ claimed/ blocked/ done/ abandoned/
+  notebook/        append-only log + message bus (its own git repo; the only durable memory - one PER INSTANCE)
+  whiteboard/      human-input app state: questions/ answered/ inbox/
   worktrees/       per-job isolated checkouts (worktrees/<jobid>, branch lab/<stage>/<jobid>)
   project/         a FORK the lab owns (WORK_SLUG), cloned here; the real upstream is a read-only `upstream` remote
   config.env       REPO_SLUG, LAB_TOKEN, pacing, gate mode (gitignored)
@@ -75,8 +86,9 @@ Verbs: `research design build review fix merge improve`.
 
 ## The notebook
 
-Append-only log AND message bus AND the only durable memory. Each append is a git commit.
-Path: `notebook/YYYY/MM/DD/<HHMMSS>Z-<kind>-<slug>.md`. Kinds: `assign tick message result worktree`.
+Append-only log AND message bus AND the only durable memory - **one notebook per instance**, under
+that instance's state root. Each append is a git commit. There is no shared journal across
+instances. Path: `notebook/YYYY/MM/DD/<HHMMSS>Z-<kind>-<slug>.md`. Kinds: `assign tick message result worktree`.
 
 - `bin/notebook append --kind K --role R [--to T] [--job J] [--stage S] [--status ST] [--refs "a,b"] [--slug S] (--body "text" | --body-file F)` - prints the relpath.
 - `bin/notebook tail [N]` - the orchestrator's Observe step.
@@ -95,7 +107,9 @@ the single `LAB_TOKEN` bearer.
   The human's replies land as `whiteboard/inbox/<ts>-<ask_id>.json`; the orchestrator applies them
   with `bin/whiteboard drain` each Observe (unblocks jobs, resolves questions, logs a `message`).
 - **observatory** (`/observatory`) - observability: the pipeline kanban across stages plus a live
-  activity feed. Watch here; do not act here.
+  activity feed. Watch here; do not act here. A header **All repos** toggle opens a read-only
+  cross-instance overview (a status card per instance + a merged feed across every
+  `instances/*/notebook`), reachable from any instance and exposing no secrets (repo/work/port/counts only).
 
 Standing watcher: `bin/watch` (background Bash task, surfaced via Monitor) appends ONE notebook
 `message` on terminal/actionable transitions (inbox reply arrived, CI passed/failed, new open job).

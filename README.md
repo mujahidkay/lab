@@ -99,45 +99,47 @@ Stop the apps with `bin/serve stop`.
 Then:
 
 1. **Post a task** on the whiteboard.
-2. **Watch** the kanban and the live feed on the observatory. Stages: `queued research design build review fix merge blocked done`.
+2. **Watch** the kanban and the live feed on the observatory. Stages: `queued research design build review fix merge blocked done`. When you run several instances, the observatory's **All repos** toggle (in the header) opens a read-only cross-instance overview: a status card per instance plus a merged activity feed across every instance's notebook. It is reachable from any instance's observatory and never exposes secrets (only repo, work slug, port, and job counts).
 3. **Answer questions** in the reply box when a worker raises one. That unblocks the job.
 4. **Review and approve** design and impl PRs on GitHub. The design PR needs a single-word sign-off through the whiteboard. The coordinator merges only after your sign-off, an approving referee, and green CI.
 
 You interact via the apps and GitHub. Not the lab CLI.
 
-## Run in a container (one per repo)
+## Run in containers (many repos at once)
 
-The lab is single-tenant: one checkout works one repo (its own `config.env`, `project/`, `notebook/`, `docket/`, `whiteboard/`, and port). To work several repos with full isolation, run each checkout in its own Docker container. `labctl` boxes the current checkout: one repo per checkout, one container per checkout. Claude Code runs inside.
+The lab's mutable state is **per-instance**. An **instance** works one repo and owns its own state tree - `config.env`, `project/`, `notebook/`, `docket/`, `whiteboard/`, `worktrees/` - under `instances/<name>/`. The CODE (`bin/`, `apps/`, `roles/`, `skills/`, `designs/`) is one shared bind mount. So a single checkout can run many repos concurrently: one Docker container per named instance, all sharing the same code. Claude Code runs inside each. `labctl` boxes them: `./labctl <cmd> [instance]`, defaulting to the instance named `default`.
 
 Requirements: Docker.
 
 ```sh
 ./labctl build     # once: build the runtime image (node, yarn, git, gh, cloudflared, claude)
 
-# One command per repo. labctl WRITES config.env for you from these env vars,
-# then forks + clones the target inside the container. Give each repo a unique DASH_PORT.
-REPO_SLUG=owner/repo LAB_GH_USER=my-lab-bot LAB_GH_TOKEN=ghp_xxx \
-  LAB_GH_EMAIL=ID+my-lab-bot@users.noreply.github.com DASH_PORT=8901 ./labctl init
+# One command per instance. labctl WRITES that instance's config.env from these env vars,
+# then forks + clones the target inside the container. Give each instance a UNIQUE DASH_PORT.
+REPO_SLUG=owner/A LAB_GH_USER=my-lab-bot LAB_GH_TOKEN=ghp_xxx DASH_PORT=8901 ./labctl init repoA
+REPO_SLUG=owner/B LAB_GH_USER=my-lab-bot LAB_GH_TOKEN=ghp_xxx DASH_PORT=8902 ./labctl init repoB
 
-./labctl up        # start the container, install deps on first run, enter Claude Code inside
+./labctl up repoA  # one terminal: start the container, install deps first run, enter Claude Code
+./labctl up repoB  # another terminal: a second repo, its own state and port, fully isolated
 ```
 
-You do not hand-edit `config.env` first: `labctl init` seeds it from the environment (creating it from the example, merging what you pass) and writes it into the checkout (gitignored). A token on the command line lands in your shell history and `ps`, so prefer `export`-ing `LAB_GH_TOKEN` (ideally from a sourced secrets file) and `unset`-ing it afterward. Recognized vars: `REPO_SLUG DEFAULT_BRANCH LAB_GH_USER LAB_GH_TOKEN LAB_GH_EMAIL DASH_HOST DASH_PORT GATE_MODE TUNNEL CF_TUNNEL_NAME`.
+`./labctl up` with no name uses the instance `default` (state under `instances/default/`). You do not hand-edit `config.env` first: `labctl init <instance>` seeds `instances/<instance>/config.env` from the environment (creating it from the example, merging what you pass). A token on the command line lands in your shell history and `ps`, so prefer `export`-ing `LAB_GH_TOKEN` (ideally from a sourced secrets file) and `unset`-ing it afterward. Recognized vars: `REPO_SLUG DEFAULT_BRANCH LAB_GH_USER LAB_GH_TOKEN LAB_GH_EMAIL DASH_HOST DASH_PORT GATE_MODE TUNNEL CF_TUNNEL_NAME`.
 
-Inside the container, if Claude asks you to sign in, run `claude` once (a device login that persists in this container's volume) or set `ANTHROPIC_API_KEY` before `up`. Then say **start the lab**. The apps are reachable on the host at `http://127.0.0.1:<DASH_PORT>/` (the port is mapped).
+Inside the container, if Claude asks you to sign in, run `claude` once (a device login that persists in a shared volume) or set `ANTHROPIC_API_KEY` before `up`. Then say **start the lab**. Each instance's apps are reachable on the host at `http://127.0.0.1:<DASH_PORT>/` (the port is mapped).
 
-Other commands: `./labctl serve` (start just the apps), `./labctl sh` (debug shell), `./labctl status`, `./labctl stop`, `./labctl rm` (removes the container and its `node_modules` + claude-login volumes; your files are untouched).
+Other commands (each takes an optional instance name, default `default`): `./labctl serve` (start just the apps), `./labctl sh` (debug shell), `./labctl status`, `./labctl stop`, `./labctl rm` (removes that instance's container; your files are untouched). `./labctl ls` lists this checkout's instances with their container state and port.
 
 Notes:
-- The image holds only the toolchain. This checkout is bind-mounted at `/lab`, so code edits need no rebuild.
-- Claude auth cannot cross from a macOS Keychain into a Linux container, so you log in once inside (or use `ANTHROPIC_API_KEY`). The lab's GitHub identity is still the bot token from `config.env`, not your account.
-- Give each checkout a unique `DASH_PORT` so two containers do not collide on the host.
+- The image holds only the toolchain. This checkout is bind-mounted at `/lab`, so code edits need no rebuild and every instance shares the same code.
+- `node_modules` and the Claude login are per-checkout Docker volumes shared across all of a checkout's instances: one install, one login, reused by every instance. The container per instance is `lab-<ckid>-<instance>`.
+- Only code and those shared volumes are common; each instance's state (`instances/<name>/`) is isolated. Give each instance a unique `DASH_PORT` so their containers do not collide on the host.
+- Claude auth cannot cross from a macOS Keychain into a Linux container, so you log in once inside (or use `ANTHROPIC_API_KEY`). The lab's GitHub identity is still the bot token from each instance's `config.env`, not your account.
 
 ## How it works
 
 - **Roles / skills / COMMON / designs.** [`roles/`](roles/) holds one brief per role (director, coordinator, researcher, theorist, technician, referee, debugger). [`skills/`](skills/) holds reusable procedures. `COMMON.md` is shared context forwarded to every worker. [`designs/`](designs/) holds design docs. These markdown files are the control surface that keeps the session on-model.
 - **Docket.** [`docket/`](docket/) is the task queue, one markdown file per job, moving between `open/ claimed/ blocked/ done/ abandoned/`. Frontmatter carries the verb, stage, eligible roles, and authorizations. The body is the verbatim task.
-- **Notebook.** [`notebook/`](notebook/) is an append-only log and message bus, its own git repo (each append is a commit). It is the **only durable memory**. The loop survives `/clear` because everything lives here, not in context.
+- **Notebook.** [`notebook/`](notebook/) is an append-only log and message bus, its own git repo (each append is a commit), **one per instance**. It is that instance's **only durable memory**. The loop survives `/clear` because everything lives here, not in context. There is no shared journal across instances; the observatory's "All repos" view is a read-only human overview, not the agents' memory.
 - **Worktrees.** Each job runs in `worktrees/<jobid>/` on branch `lab/<stage>/<jobid>`, isolated from every other job. Torn down on return; the branch and commits persist.
 - **The session.** The director reads only job frontmatter and short results, never job bodies or diffs. It `bin/docket claim`s a ready job, `bin/wt prepare`s a worktree, and dispatches a fresh subagent through the **Agent tool** with the role brief, COMMON, authorizations, and the job body. It logs a `tick` and calls **ScheduleWakeup** for the next cycle. Delay is short when active, long when idle. Never exactly 300.
 
@@ -163,15 +165,21 @@ Notes:
 ## Layout
 
 ```
+# code root (shared across instances)
 bin/          agent + setup CLIs (docket, notebook, whiteboard, wt, lab, serve, github, watch)
 apps/         api + whiteboard + observatory (Node, SSE)
 roles/        one brief per role
 skills/       reusable procedures
 designs/      design docs
+labctl        Docker wrapper: one container per named instance
+
+# state root (mutable). Run directly, it IS the code root (flat, below). Under labctl,
+# each instance's state lives at instances/<name>/ with the same shape.
 docket/       task queue (open/ claimed/ blocked/ done/ abandoned/)
-notebook/     append-only log + message bus (own git repo)
+notebook/     append-only log + message bus (own git repo; one per instance)
 whiteboard/   questions/ answered/ inbox/
 worktrees/    per-job git worktrees
 project/      clone of the lab's fork (upstream added read-only)
 config.env    your config (gitignored)
+instances/    under labctl, each instance's state tree: instances/<name>/{config.env,docket,notebook,whiteboard,worktrees,project}
 ```

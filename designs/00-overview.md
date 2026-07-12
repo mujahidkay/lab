@@ -10,8 +10,9 @@ make the right behavior the path of least resistance.
 
 - The **docket** is the task queue. Jobs move through stages: queued research design build
   review fix merge blocked done.
-- The **notebook** is an append-only log and message bus. It is the ONLY durable memory. It
-  survives `/clear`. Every append is a git commit.
+- The **notebook** is an append-only log and message bus, one per instance. It is the ONLY
+  durable memory (there is no shared journal across instances). It survives `/clear`. Every
+  append is a git commit.
 - The **whiteboard** is the human surface: post tasks, answer questions. The human touches
   nothing else.
 - The **observatory** shows the pipeline (kanban plus a live feed). Read-only.

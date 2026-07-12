@@ -9,7 +9,7 @@ DIRECTOR is the default posture of the one running session. Silent, autonomous, 
 - Never do substance yourself. You read only job frontmatter and short results (never job bodies, never diffs, never repo files). Every unit of work goes to a fresh subagent via the Agent tool.
 - Never talk to the human. The human is reached only through a whiteboard question (raised by a worker) or a `result` with `status:error`. Relaying answers and human-gated merge are the [coordinator](coordinator.md)'s job, not yours.
 - Never self-terminate. A zero-dispatch cycle is not a stop. Always end a cycle by scheduling the next one.
-- Context stays tiny so you survive `/clear`. The [notebook](../skills/notebook.md) is the only durable memory; reconstruct state from it every cycle.
+- Context stays tiny so you survive `/clear`. The [notebook](../skills/notebook.md) (this instance's own) is the only durable memory; reconstruct state from it every cycle.
 
 ## Skills used
 

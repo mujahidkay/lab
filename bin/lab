@@ -25,16 +25,21 @@ cmd_init() {
     case "$1" in --rotate-token) rotate=1; shift ;; *) die "lab init: unknown arg '$1'" ;; esac
   done
 
+  # This instance's state dir (LAB_STATE = root for a bare checkout, else
+  # instances/<name>/). All config + state below live here, never under LAB_ROOT.
+  mkdir -p "$LAB_STATE"
+  [ "$LAB_STATE" = "$LAB_ROOT" ] || echo "instance: ${LAB_INSTANCE:-?}  (state: $LAB_STATE)"
+
   # config.env
-  if [ ! -f "$LAB_ROOT/config.env" ]; then
-    cp "$LAB_ROOT/config.env.example" "$LAB_ROOT/config.env"
+  if [ ! -f "$LAB_STATE/config.env" ]; then
+    cp "$LAB_ROOT/config.env.example" "$LAB_STATE/config.env"
     echo "created config.env from example — edit REPO_SLUG before real work"
   fi
 
   # LAB_TOKEN
   if [ "$rotate" = 1 ] || [ -z "${LAB_TOKEN:-}" ]; then
     local tok; tok="$(rand_hex 24)"
-    env_set "$LAB_ROOT/config.env" LAB_TOKEN "$tok"
+    env_set "$LAB_STATE/config.env" LAB_TOKEN "$tok"
     LAB_TOKEN="$tok"
     echo "set LAB_TOKEN (48 hex chars) in config.env"
   fi
@@ -95,6 +100,7 @@ _count() { ls "$1"/*.md >/dev/null 2>&1 && ls "$1"/*.md | wc -l | tr -d ' ' || e
 cmd_status() {
   echo "lab status"
   echo "  root:        $LAB_ROOT"
+  [ "$LAB_STATE" = "$LAB_ROOT" ] || echo "  instance:    ${LAB_INSTANCE:-?}  (state: $LAB_STATE)"
   echo "  upstream:    ${REPO_SLUG:-<unset>}  (default branch: ${DEFAULT_BRANCH}; never a PR base)"
   echo "  working fork: ${WORK_SLUG:-<unset>}"
   echo "  lab account: ${LAB_GH_USER:-<unset>}   gh token: $([ -n "${LAB_GH_TOKEN:-}" ] && echo set || echo MISSING)"

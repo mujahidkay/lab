@@ -53,7 +53,8 @@ cmd_start() {
     [ -d "$LAB_ROOT/apps/observatory/dist" ] || _build_app observatory
 
     echo "starting API on ${DASH_HOST}:${DASH_PORT} ..."
-    ( cd "$LAB_ROOT" && LAB_ROOT="$LAB_ROOT" DASH_HOST="$DASH_HOST" DASH_PORT="$DASH_PORT" LAB_TOKEN="${LAB_TOKEN:-}" \
+    ( cd "$LAB_ROOT" && LAB_ROOT="$LAB_ROOT" LAB_STATE="$LAB_STATE" LAB_INSTANCE="${LAB_INSTANCE:-}" \
+        DASH_HOST="$DASH_HOST" DASH_PORT="$DASH_PORT" LAB_TOKEN="${LAB_TOKEN:-}" \
         nohup "$LAB_ROOT/node_modules/.bin/tsx" apps/api/src/server.ts >"$API_LOG" 2>&1 & echo $! > "$API_PID" )
     sleep 1
     _running || { echo "serve: API failed to start; see $API_LOG" >&2; tail -5 "$API_LOG" >&2 || true; exit 1; }

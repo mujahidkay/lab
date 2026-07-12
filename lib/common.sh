@@ -4,25 +4,41 @@
 # never block a human on a terminal; questions go to the whiteboard instead.
 
 # Resolve LAB_ROOT as the parent of this lib/ directory, regardless of CWD.
+# LAB_ROOT is the CODE root (bin/, lib/, apps/, roles/, skills/, designs/,
+# node_modules) — shared across every instance of this checkout.
 _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAB_ROOT="$(cd "$_lib_dir/.." && pwd)"
 export LAB_ROOT
 
-# Load config.env (if present) into the environment.
-if [ -f "$LAB_ROOT/config.env" ]; then
+# LAB_STATE is the MUTABLE state root: config.env, docket/, notebook/,
+# whiteboard/, worktrees/, project/, .lab/. One checkout can host many instances,
+# each working a DIFFERENT repo under instances/<name>/, so the code is shared
+# (one bind mount) while state is isolated (two containers never clash on files).
+#   LAB_STATE set     -> use it verbatim
+#   LAB_INSTANCE set  -> $LAB_ROOT/instances/$LAB_INSTANCE
+#   neither           -> $LAB_ROOT  (legacy: a bare checkout keeps state at root)
+: "${LAB_INSTANCE:=}"
+if [ -n "${LAB_STATE:-}" ]; then :
+elif [ -n "$LAB_INSTANCE" ]; then LAB_STATE="$LAB_ROOT/instances/$LAB_INSTANCE"
+else LAB_STATE="$LAB_ROOT"
+fi
+export LAB_INSTANCE LAB_STATE
+
+# Load THIS instance's config.env (if present) into the environment.
+if [ -f "$LAB_STATE/config.env" ]; then
   set -a
   # shellcheck disable=SC1091
-  . "$LAB_ROOT/config.env"
+  . "$LAB_STATE/config.env"
   set +a
 fi
 
-# Canonical paths.
-DOCKET="$LAB_ROOT/docket"
-NOTEBOOK="$LAB_ROOT/notebook"
-WHITEBOARD="$LAB_ROOT/whiteboard"
-WORKTREES="$LAB_ROOT/worktrees"
-PROJECT="$LAB_ROOT/project"
-DOTLAB="$LAB_ROOT/.lab"
+# Canonical state paths (all under LAB_STATE, never LAB_ROOT).
+DOCKET="$LAB_STATE/docket"
+NOTEBOOK="$LAB_STATE/notebook"
+WHITEBOARD="$LAB_STATE/whiteboard"
+WORKTREES="$LAB_STATE/worktrees"
+PROJECT="$LAB_STATE/project"
+DOTLAB="$LAB_STATE/.lab"
 export DOCKET NOTEBOOK WHITEBOARD WORKTREES PROJECT DOTLAB
 
 # Defaults (config.env overrides these).
@@ -109,11 +125,12 @@ rand_hex() {
   fi
 }
 
-# Readable element word for human-friendly ids.
-_LAB_ELEMENTS="argon boron carbon neon oxygen helium xenon radon iron zinc gold lead tin copper silver cobalt nickel sodium sulfur iodine cesium barium cerium erbium indium osmium cobalt radium yttrium hafnium"
-rand_element() {
+# Readable computer-scientist surname for human-friendly ids. Single tokens with
+# NO hyphens: an id is `<ts>-<name>` and the apps split on '-' to show the name.
+_LAB_NAMES="turing hopper lovelace dijkstra knuth ritchie thompson torvalds hamilton liskov backus mccarthy kay cerf shannon neumann babbage engelbart wozniak kernighan stallman rossum matsumoto gosling hejlsberg lamport rivest shamir adleman diffie hellman hoare milner iverson hamming postel wall carmack cook karp perlis wilkes"
+rand_codename() {
   # shellcheck disable=SC2086
-  set -- $_LAB_ELEMENTS
+  set -- $_LAB_NAMES
   local count=$# idx word
   idx=$(( ( 0x$(rand_hex 2) % count ) + 1 ))
   eval "word=\${$idx}"
@@ -128,11 +145,11 @@ slugify() {
     | cut -c1-48
 }
 
-# new_job_id -> <ts_id>-<element>, guaranteed unique across all docket states.
+# new_job_id -> <ts_id>-<codename>, guaranteed unique across all docket states.
 new_job_id() {
   local id
   while :; do
-    id="$(ts_id)-$(rand_element)"
+    id="$(ts_id)-$(rand_codename)"
     if ! ls "$DOCKET"/*/"$id".md >/dev/null 2>&1; then
       printf '%s' "$id"
       return 0

@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
-# labctl — run THIS lab checkout inside its own Docker container.
+# labctl — run THIS lab checkout inside Docker, one container per INSTANCE.
 #
-# One repo per checkout, one container per checkout: to work two repos, make two
-# checkouts (each with its own config.env + DASH_PORT), and `./labctl up` in each.
-# The container holds only the toolchain; this checkout is bind-mounted at /lab,
-# so code edits need no rebuild. Claude Code runs INSIDE the container.
+# One checkout can drive MANY repos at once: each named instance gets its own
+# container, its own state tree (instances/<name>/: config.env, project, docket,
+# notebook, worktrees) and its own port, while the CODE is one shared bind mount
+# at /lab, so edits need no rebuild. Two instances never clash on files.
 #
-#   ./labctl build          build (or rebuild) the runtime image
-#   ./labctl init           write config.env from the environment, then fork + clone the target
-#   ./labctl up             start the container and enter Claude Code (the orchestrator)
-#   ./labctl serve          start the API + apps inside the container (background)
-#   ./labctl sh             open a shell in the container (debugging)
-#   ./labctl status         show the container + image state
-#   ./labctl stop           stop the container
-#   ./labctl rm             remove the container (keeps your files; drops node_modules + claude-login volumes)
+#   ./labctl build                   build (or rebuild) the runtime image (shared by all instances)
+#   ./labctl init   [instance]       seed instances/<instance>/config.env, then fork + clone the target
+#   ./labctl up     [instance]       start that instance's container and enter Claude Code (orchestrator)
+#   ./labctl serve  [instance]       start the API + apps for that instance (background)
+#   ./labctl sh     [instance]       open a shell in that instance's container (debugging)
+#   ./labctl status [instance]       show the container + image state
+#   ./labctl stop   [instance]       stop that instance's container
+#   ./labctl rm     [instance]       remove that instance's container (keeps files; shared volumes stay)
+#   ./labctl ls                      list this checkout's instances + their containers
 #
-# One-command setup for a checkout (labctl writes config.env for you from these
-# env vars, then forks + clones inside the container):
-#   REPO_SLUG=owner/repo LAB_GH_USER=my-lab-bot LAB_GH_TOKEN=ghp_xxx \
-#   LAB_GH_EMAIL=ID+my-lab-bot@users.noreply.github.com DASH_PORT=8901 ./labctl init
+# `instance` defaults to `default`. To work two repos:
+#   REPO_SLUG=owner/A LAB_GH_USER=my-bot LAB_GH_TOKEN=ghp_xxx DASH_PORT=8901 ./labctl init repoA
+#   REPO_SLUG=owner/B LAB_GH_USER=my-bot LAB_GH_TOKEN=ghp_xxx DASH_PORT=8902 ./labctl init repoB
+#   ./labctl up repoA        # in one terminal
+#   ./labctl up repoB        # in another
+# Give each instance a UNIQUE DASH_PORT (its dashboard is published on it).
 # Note: a token on the command line lands in your shell history and `ps`; prefer
 # `export`-ing it (ideally from a sourced secrets file) and `unset` when done.
 
@@ -27,15 +30,29 @@ set -euo pipefail
 INSTANCE_PATH="$(cd "$(dirname "$0")" && pwd -P)"
 IMAGE="${LAB_IMAGE:-lab-runtime}"
 
-# Identity derived from the checkout location (distinct checkouts -> distinct containers).
+# Checkout identity (distinct checkouts -> distinct containers + volumes). The
+# node_modules + claude-login volumes are keyed to the CHECKOUT and shared across
+# its instances: identical code, one dependency install, one Claude login.
 _base="$(basename "$INSTANCE_PATH" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-')"
 _hash="$(printf %s "$INSTANCE_PATH" | shasum 2>/dev/null | head -c 8)"
-NAME="lab-${_base:-lab}-${_hash:-0}"
-NM_VOL="${NAME}-node_modules"
-CLAUDE_VOL="${NAME}-claude"
+CKID="${_base:-lab}-${_hash:-0}"
+NM_VOL="lab-${CKID}-node_modules"
+CLAUDE_VOL="lab-${CKID}-claude"
+
+# Per-instance identity (set by _use_instance from the subcommand's arg).
+INSTANCE=""; NAME=""; STATE_DIR=""
 
 # Config keys labctl will seed into config.env from the environment (if set).
 CONFIG_KEYS="REPO_SLUG DEFAULT_BRANCH LAB_GH_USER LAB_GH_TOKEN LAB_GH_EMAIL DASH_HOST DASH_PORT GATE_MODE TUNNEL CF_TUNNEL_NAME"
+
+# _use_instance NAME — resolve the container name + host state dir for an instance.
+# Container name is per-instance so repoA and repoB are different containers.
+_use_instance() {
+  INSTANCE="${1:-default}"
+  case "$INSTANCE" in *[!a-zA-Z0-9_-]*|"") die "invalid instance name '$INSTANCE' (use letters, digits, - or _)";; esac
+  NAME="lab-${CKID}-${INSTANCE}"
+  STATE_DIR="$INSTANCE_PATH/instances/$INSTANCE"
+}
 
 die() { printf 'labctl: %s\n' "$*" >&2; exit 1; }
 _have_docker() { command -v docker >/dev/null 2>&1 || die "docker not found"; docker info >/dev/null 2>&1 || die "docker daemon not running"; }
@@ -45,11 +62,53 @@ _running() { [ "$(docker container inspect -f '{{.State.Running}}' "$NAME" 2>/de
 # exec inside as the lab user, in /lab, with the right HOME.
 _dexec() { docker exec -u lab -e HOME=/home/lab -w /lab "$@"; }
 
-# Host port to publish, read fresh from config.env each time (default 8899).
-# Give each checkout a UNIQUE DASH_PORT so two containers do not collide.
+# Host port to publish for this instance, read fresh from its config.env each
+# time. Fallback matches lib/common.sh's DASH_PORT default so the published host
+# port always equals the port the in-container API binds.
 _port() {
-  local p; p="$(grep -E '^DASH_PORT=' "$INSTANCE_PATH/config.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -cd '0-9')"
-  printf '%s' "${p:-8899}"
+  local p; p="$(grep -E '^DASH_PORT=' "$STATE_DIR/config.env" 2>/dev/null | tail -1 | cut -d= -f2 | tr -cd '0-9')"
+  printf '%s' "${p:-8787}"
+}
+
+# Print the DASH_PORT of every OTHER instance's config.env (one per line).
+_ports_in_use_by_others() {
+  local d self="$STATE_DIR/config.env" p
+  for d in "$INSTANCE_PATH"/instances/*/config.env; do
+    [ -f "$d" ] || continue
+    [ "$d" = "$self" ] && continue
+    p="$(grep -E '^DASH_PORT=' "$d" 2>/dev/null | tail -1 | cut -d= -f2 | tr -cd '0-9')"
+    [ -n "$p" ] && printf '%s\n' "$p"
+  done
+}
+
+# Ensure this instance's DASH_PORT does not collide with another instance's.
+# If the user passed DASH_PORT explicitly, respect it (warn on collision);
+# otherwise auto-assign the first free port at/above 8801 (avoids the example's
+# shared 8787 default, so `init repoA; init repoB` just works).
+_ensure_unique_port() {
+  local cur used free explicit="${DASH_PORT:-}"
+  cur="$(_port)"
+  used="$(_ports_in_use_by_others)"
+  printf '%s\n' $used | grep -qx "$cur" || { [ -n "$explicit" ] && return 0; }
+  if [ -n "$explicit" ]; then
+    printf '%s\n' $used | grep -qx "$cur" && warn "DASH_PORT $cur collides with another instance; pick a different one or two instances will fight for it"
+    return 0
+  fi
+  free=8801
+  while printf '%s\n' $used | grep -qx "$free"; do free=$((free + 1)); done
+  _env_set "$STATE_DIR/config.env" DASH_PORT "$free"
+  echo "  auto-assigned DASH_PORT=$free (unique across this checkout's instances)"
+}
+
+# One-time notice: a pre-multi-instance container (bare name, state at the
+# checkout root) is orphaned by the move to instances/<name>/.
+_legacy_notice() {
+  [ "$INSTANCE" = default ] || return 0
+  local bare="lab-${CKID}"
+  if docker container inspect "$bare" >/dev/null 2>&1; then
+    warn "found a pre-multi-instance container '$bare' (its state is at the checkout root)."
+    warn "the 'default' instance now lives under instances/default/. When ready, retire the old one: docker rm -f $bare"
+  fi
 }
 
 # Set or replace KEY=VALUE in an env file.
@@ -64,13 +123,14 @@ _env_set() {
   fi
 }
 
-# Seed config.env from labctl's environment: create it from the example if
-# missing, then overwrite any CONFIG_KEYS that were passed as env vars.
+# Seed this instance's config.env from labctl's environment: create it from the
+# example if missing, then overwrite any CONFIG_KEYS that were passed as env vars.
 _bootstrap_config() {
-  local cfg="$INSTANCE_PATH/config.env" k v wrote=0
+  local cfg="$STATE_DIR/config.env" k v wrote=0
+  mkdir -p "$STATE_DIR"
   if [ ! -f "$cfg" ]; then
     if [ -f "$INSTANCE_PATH/config.env.example" ]; then cp "$INSTANCE_PATH/config.env.example" "$cfg"; else : > "$cfg"; fi
-    echo "created config.env"
+    echo "created instances/$INSTANCE/config.env"
   fi
   for k in $CONFIG_KEYS; do
     v="${!k-}"
@@ -103,6 +163,7 @@ _ensure_up() {
       -v "$CLAUDE_VOL":/home/lab/.claude \
       -p "127.0.0.1:${port}:${port}" \
       -e LAB_CONTAINER=1 \
+      -e LAB_INSTANCE="$INSTANCE" \
       ${ANTHROPIC_API_KEY:+-e ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} \
       "$IMAGE" >/dev/null
   fi
@@ -111,51 +172,88 @@ _ensure_up() {
 
 _ensure_deps() {
   # Install node deps into the container-local node_modules volume on first run
-  # (host macOS node_modules must not leak in; native binaries differ).
-  if ! _dexec "$NAME" test -x /lab/node_modules/.bin/tsx 2>/dev/null; then
-    echo "installing dependencies inside the container (first run) ..."
-    _dexec "$NAME" bash -lc 'cd /lab && yarn install'
-  fi
+  # (host macOS node_modules must not leak in; native binaries differ). The
+  # node_modules volume is SHARED across this checkout's instances, so two
+  # parallel `up`s could race the first install — flock serializes them: the
+  # second waits, then sees tsx present and skips.
+  _dexec "$NAME" bash -lc '
+    command -v flock >/dev/null 2>&1 || { test -x /lab/node_modules/.bin/tsx || { echo "installing dependencies (first run) ..."; cd /lab && yarn install; }; exit; }
+    ( flock 9; test -x /lab/node_modules/.bin/tsx || { echo "installing dependencies (first run) ..."; cd /lab && yarn install; } ) 9>/lab/node_modules/.install.lock'
 }
 
 cmd_init() {
+  _use_instance "${1:-}"
   _bootstrap_config
+  _ensure_unique_port
+  _legacy_notice
   _ensure_up
   _dexec -it "$NAME" bin/lab init
 }
 
 cmd_up() {
+  _use_instance "${1:-}"
+  _legacy_notice
   _ensure_up
   _ensure_deps
   echo
-  echo "Entering Claude Code in $NAME. If it asks you to sign in, run:  claude  (device login persists in this container)."
+  echo "Entering Claude Code in $NAME (instance '$INSTANCE'). If it asks you to sign in, run:  claude  (device login persists across this checkout's instances)."
   echo "Once in, say:  start the lab"
   echo
   _dexec -it "$NAME" claude
 }
 
-cmd_serve() { _ensure_up; _ensure_deps; _dexec "$NAME" bin/serve start; }
-cmd_sh()    { _ensure_up; _dexec -it "$NAME" bash -l; }
+cmd_serve() { _use_instance "${1:-}"; _ensure_up; _ensure_deps; _dexec "$NAME" bin/serve start; }
+cmd_sh()    { _use_instance "${1:-}"; _ensure_up; _dexec -it "$NAME" bash -l; }
 
 cmd_status() {
+  _use_instance "${1:-}"
   _have_docker
-  echo "instance:  $NAME"
+  echo "instance:  $INSTANCE"
+  echo "container: $NAME  ($(_container_exists && (_running && echo running || echo stopped) || echo 'not created'))"
   echo "checkout:  $INSTANCE_PATH"
+  echo "state:     $STATE_DIR"
   echo "image:     $IMAGE ($(_image_exists && echo built || echo 'not built'))"
-  echo "container: $(_container_exists && (_running && echo running || echo stopped) || echo 'not created')"
   echo "port:      127.0.0.1:$(_port)"
-  echo "volumes:   ${NM_VOL}, ${CLAUDE_VOL}"
+  echo "volumes:   ${NM_VOL}, ${CLAUDE_VOL}  (shared across this checkout's instances)"
 }
 
-cmd_stop() { _have_docker; _container_exists && docker stop "$NAME" >/dev/null && echo "stopped $NAME" || echo "not running"; }
-cmd_rm()   {
+cmd_stop() { _use_instance "${1:-}"; _have_docker; _container_exists && docker stop "$NAME" >/dev/null && echo "stopped $NAME" || echo "not running"; }
+
+cmd_rm() {
+  _use_instance "${1:-}"
   _have_docker
   docker rm -f "$NAME" >/dev/null 2>&1 || true
-  docker volume rm "$NM_VOL" "$CLAUDE_VOL" >/dev/null 2>&1 || true
-  echo "removed container + volumes for $NAME (your files under $INSTANCE_PATH are untouched)"
+  echo "removed container $NAME (state under $STATE_DIR is untouched)."
+  echo "the node_modules + claude volumes ($NM_VOL, $CLAUDE_VOL) are shared across this"
+  echo "checkout's instances and persist; drop them with 'docker volume rm' once no instances remain."
 }
 
-[ $# -gt 0 ] || { echo "usage: ./labctl build|init|up|serve|sh|status|stop|rm" >&2; exit 2; }
+cmd_ls() {
+  _have_docker
+  echo "checkout:  $INSTANCE_PATH   (container prefix: lab-${CKID}-)"
+  local dir="$INSTANCE_PATH/instances" n cs port found=0
+  if [ -d "$dir" ]; then
+    for n in "$dir"/*/; do
+      [ -d "$n" ] || continue
+      n="$(basename "$n")"
+      _use_instance "$n"
+      cs="$(_container_exists && (_running && echo running || echo stopped) || echo 'not created')"
+      port="$(_port)"
+      printf '  %-16s container=%-10s port=%s\n' "$n" "$cs" "$port"
+      found=1
+    done
+  fi
+  # Surface a leftover pre-multi-instance container (bare name, root-level state).
+  local bare="lab-${CKID}"
+  if docker container inspect "$bare" >/dev/null 2>&1; then
+    printf '  %-16s container=%-10s (legacy; root-level state — retire with: docker rm -f %s)\n' \
+      "(pre-instance)" "$([ "$(docker container inspect -f '{{.State.Running}}' "$bare" 2>/dev/null)" = true ] && echo running || echo stopped)" "$bare"
+    found=1
+  fi
+  [ "$found" = 1 ] || echo "  (no instances yet — run './labctl init <name>')"
+}
+
+[ $# -gt 0 ] || { echo "usage: ./labctl build | init|up|serve|sh|status|stop|rm [instance] | ls" >&2; exit 2; }
 sub=$1; shift || true
 case "$sub" in
   build)  cmd_build "$@" ;;
@@ -166,5 +264,6 @@ case "$sub" in
   status) cmd_status "$@" ;;
   stop)   cmd_stop "$@" ;;
   rm)     cmd_rm "$@" ;;
+  ls)     cmd_ls "$@" ;;
   *) echo "labctl: unknown command '$sub'" >&2; exit 2 ;;
 esac

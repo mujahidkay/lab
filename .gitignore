@@ -7,6 +7,10 @@ notebook/
 project/
 worktrees/
 
+# per-instance state trees (instances/<name>/{config.env,docket,notebook,...});
+# one checkout can host many instances, all runtime, none tracked
+/instances/
+
 # runtime state: keep the directory structure (.gitkeep), ignore per-run contents
 /docket/*/*
 !/docket/*/.gitkeep

@@ -104,6 +104,32 @@ export interface LabState {
   recent: NotebookEntry[];
 }
 
+// --- cross-instance aggregate ------------------------------------------------
+// One lab checkout can host many instances (instances/<name>/), each working a
+// different repo. These types back the observatory's read-only "All repos" view.
+
+export interface InstanceSummary {
+  name: string;          // the instance name (instances/<name>/)
+  repo: string;          // upstream REPO_SLUG (owner/name), or '' if unset
+  work: string;          // the fork the lab works on (LAB_GH_USER/name), or ''
+  port?: number;         // that instance's DASH_PORT (for a dashboard link)
+  open: number;
+  claimed: number;
+  blocked: number;
+  done: number;
+  abandoned: number;
+  lastActivity?: string; // ts of the most recent notebook entry
+}
+
+export interface AggregateEntry extends NotebookEntry {
+  instance: string;      // which instance this notebook entry came from
+}
+
+export interface AggregateView {
+  instances: InstanceSummary[];
+  recent: AggregateEntry[];
+}
+
 export type LabEvent =
   | { type: 'hello'; ts: string }
   | { type: 'change'; area: 'docket' | 'notebook' | 'whiteboard'; ts: string };

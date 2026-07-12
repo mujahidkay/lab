@@ -11,13 +11,17 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, normalize, extname } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
 import chokidar from 'chokidar';
-import { buildState, buildJobViews, listQuestions, labRoot, paths } from '@lab/shared/fs';
+import {
+  buildState, buildJobViews, listQuestions, buildAggregate, listInstances,
+  labRoot, stateRoot, paths,
+} from '@lab/shared/fs';
 
-const ROOT = labRoot();
+const ROOT = labRoot();      // code root: bin/ helpers + built SPAs
+const STATE = stateRoot();   // this instance's mutable state (docket/notebook/...)
 const HOST = process.env.DASH_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.DASH_PORT || '8787', 10);
 const TOKEN = process.env.LAB_TOKEN || '';
-const P = paths(ROOT);
+const P = paths(STATE);
 
 const WB_DIST = join(ROOT, 'apps', 'whiteboard', 'dist');
 const OB_DIST = join(ROOT, 'apps', 'observatory', 'dist');
@@ -55,7 +59,7 @@ function readBody(req: IncomingMessage): Promise<string> {
 /** Run a bin/ helper with argv (never a shell string). Returns {ok, out, err}. */
 function bin(script: string, args: string[]) {
   const r = spawnSync(join(ROOT, 'bin', script), args, {
-    cwd: ROOT, env: { ...process.env, LAB_ROOT: ROOT }, encoding: 'utf8',
+    cwd: ROOT, env: { ...process.env, LAB_ROOT: ROOT, LAB_STATE: STATE }, encoding: 'utf8',
   });
   return { ok: r.status === 0, out: (r.stdout || '').trim(), err: (r.stderr || '').trim() };
 }
@@ -126,6 +130,10 @@ const server = createServer(async (req, res) => {
       }
       if (req.method === 'GET' && path === '/api/questions') return sendJson(res, 200, listQuestions().filter((q) => q.status === 'open'));
 
+      // Cross-instance aggregate (read-only): every instance under instances/*.
+      if (req.method === 'GET' && path === '/api/instances') return sendJson(res, 200, listInstances());
+      if (req.method === 'GET' && path === '/api/aggregate') return sendJson(res, 200, buildAggregate());
+
       if (req.method === 'GET' && path === '/api/events') {
         res.writeHead(200, {
           'content-type': 'text/event-stream', 'cache-control': 'no-cache',
@@ -172,6 +180,7 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[api] lab state service on http://${HOST}:${PORT}  (root: ${ROOT})`);
+  console.log(`[api] lab state service on http://${HOST}:${PORT}  (code: ${ROOT})`);
+  console.log(`[api] state: ${STATE}${process.env.LAB_INSTANCE ? `  instance: ${process.env.LAB_INSTANCE}` : ''}`);
   console.log(`[api] whiteboard: /   observatory: /observatory   token: ${TOKEN ? 'set' : 'MISSING'}`);
 });

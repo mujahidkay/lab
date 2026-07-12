@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   STAGES, STAGE_LABEL,
   type LabState, type JobView, type NotebookEntry, type Stage,
+  type AggregateView, type AggregateEntry, type InstanceSummary,
 } from '@lab/shared';
 import { api, AuthError, getToken, setToken, subscribe } from './lib';
 
@@ -16,9 +17,13 @@ const KIND_COLOR: Record<string, string> = {
   worktree: 'text-violet-300 bg-violet-400/10',
 };
 
+type View = 'repo' | 'all';
+
 export default function App() {
   const [needToken, setNeedToken] = useState(!getToken());
+  const [view, setView] = useState<View>('repo');
   const [state, setState] = useState<LabState | null>(null);
+  const [agg, setAgg] = useState<AggregateView | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -26,44 +31,81 @@ export default function App() {
     catch (e) { if (e instanceof AuthError) setNeedToken(true); }
   }, []);
 
+  const loadAgg = useCallback(async () => {
+    try { setAgg(await api<AggregateView>('/api/aggregate')); }
+    catch (e) { if (e instanceof AuthError) setNeedToken(true); }
+  }, []);
+
+  // This repo: SSE reflects this instance, so re-load on any change. No polling.
   useEffect(() => {
-    if (needToken) return;
+    if (needToken || view !== 'repo') return;
     load();
     return subscribe(load);
-  }, [needToken, load]);
+  }, [needToken, view, load]);
+
+  // All repos: SSE only covers this instance, so poll the aggregate every 4s.
+  useEffect(() => {
+    if (needToken || view !== 'all') return;
+    loadAgg();
+    const id = setInterval(loadAgg, 4000);
+    return () => clearInterval(id);
+  }, [needToken, view, loadAgg]);
 
   if (needToken) return <TokenGate onDone={() => setNeedToken(false)} />;
 
-  const jobs = state?.jobs ?? [];
-  const columns = STAGES.filter((s) => s !== 'done' || jobs.some((j) => j.stage === 'done'));
-
   return (
     <div className="flex h-full flex-col">
-      <Header />
+      <Header view={view} onView={setView} />
+      {view === 'all'
+        ? <AllRepos agg={agg} />
+        : <RepoView state={state} focus={focus} onFocus={setFocus} />}
+    </div>
+  );
+}
+
+function RepoView({ state, focus, onFocus }:
+{ state: LabState | null; focus: string | null; onFocus: (id: string | null) => void }) {
+  const jobs = state?.jobs ?? [];
+  const columns = STAGES.filter((s) => s !== 'done' || jobs.some((j) => j.stage === 'done'));
+  return (
+    <>
       <FleetBar state={state} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div className="min-h-0 min-w-0 flex-1 overflow-x-auto">
           <div className="flex h-full gap-3 p-4">
             {columns.map((s) => (
               <Column key={s} stage={s} jobs={jobs.filter((j) => j.stage === s)}
-                focus={focus} onFocus={setFocus} />
+                focus={focus} onFocus={onFocus} />
             ))}
           </div>
         </div>
-        <LiveFeed entries={state?.recent ?? []} focus={focus} onClear={() => setFocus(null)} />
+        <LiveFeed entries={state?.recent ?? []} focus={focus} onClear={() => onFocus(null)} />
       </div>
-    </div>
+    </>
   );
 }
 
-function Header() {
+function Header({ view, onView }: { view: View; onView: (v: View) => void }) {
   return (
     <header className="flex items-center gap-3 border-b border-white/5 px-5 py-3">
       <span className="h-2 w-2 rounded-full bg-emerald-400" />
       <h1 className="text-sm font-medium text-zinc-100">lab</h1>
       <span className="text-sm text-zinc-500">· observatory</span>
-      <a href="/" className="ml-auto text-xs text-zinc-500 transition-colors hover:text-zinc-200">← whiteboard</a>
+      <div className="ml-auto flex items-center gap-0.5 rounded-lg border border-white/8 bg-white/[0.02] p-0.5 text-[11px]">
+        <ViewTab active={view === 'repo'} onClick={() => onView('repo')}>This repo</ViewTab>
+        <ViewTab active={view === 'all'} onClick={() => onView('all')}>All repos</ViewTab>
+      </div>
+      <a href="/" className="text-xs text-zinc-500 transition-colors hover:text-zinc-200">← whiteboard</a>
     </header>
+  );
+}
+
+function ViewTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
+  return (
+    <button onClick={onClick}
+      className={`rounded-md px-2 py-1 transition ${active ? 'bg-white/10 text-zinc-100' : 'text-zinc-500 hover:text-zinc-300'}`}>
+      {children}
+    </button>
   );
 }
 
@@ -161,6 +203,88 @@ function FeedRow({ e }: { e: NotebookEntry }) {
         <span className={`rounded px-1.5 py-0.5 font-medium ${KIND_COLOR[e.kind] ?? 'text-zinc-500'}`}>{e.kind}</span>
         <span className="text-zinc-400">{e.role}{e.to ? ` → ${e.to}` : ''}</span>
         {e.stage && <span className="ml-auto text-zinc-600">{e.stage}</span>}
+      </div>
+      {first && <p className="mt-0.5 line-clamp-2 pl-1 text-xs text-zinc-400">{first}</p>}
+    </div>
+  );
+}
+
+function AllRepos({ agg }: { agg: AggregateView | null }) {
+  const loading = agg === null;               // null = first poll not back yet
+  const instances = agg?.instances ?? [];
+  const recent = agg?.recent ?? [];
+  return (
+    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
+        {loading ? (
+          <div className="py-16 text-center text-sm text-zinc-600">Loading…</div>
+        ) : instances.length === 0 ? (
+          <div className="animate-in rounded-xl border border-dashed border-white/8 py-16 text-center text-sm text-zinc-600">
+            No instances yet — run <span className="mono text-zinc-400">./labctl init &lt;name&gt;</span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {instances.map((i) => <InstanceCard key={i.name} i={i} />)}
+          </div>
+        )}
+      </div>
+      <AggregateFeed entries={recent} />
+    </div>
+  );
+}
+
+function InstanceCard({ i }: { i: InstanceSummary }) {
+  const repo = i.work || i.repo || '—';
+  const dash = i.port ? `//${window.location.hostname}:${i.port}/observatory` : null;
+  return (
+    <div className="animate-in rounded-xl border border-white/8 bg-white/[0.02] p-4">
+      <div className="flex items-center gap-2">
+        <span className="mono text-sm font-medium text-zinc-100">{i.name}</span>
+        {dash && (
+          <a href={dash} target="_blank" rel="noreferrer"
+            className="mono ml-auto text-[10px] text-zinc-500 transition-colors hover:text-indigo-300">
+            dashboard ↗
+          </a>
+        )}
+      </div>
+      <p className="mono mt-0.5 truncate text-xs text-zinc-500">{repo}</p>
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
+        <Metric n={i.open} label="open" />
+        <Metric n={i.claimed} label="active" tone="indigo" />
+        <Metric n={i.blocked} label="blocked" tone={i.blocked ? 'amber' : undefined} />
+        <Metric n={i.done} label="done" />
+      </div>
+      {i.lastActivity && (
+        <p className="mt-2 text-[11px] text-zinc-600">last activity {relTime(i.lastActivity)} ago</p>
+      )}
+    </div>
+  );
+}
+
+function AggregateFeed({ entries }: { entries: AggregateEntry[] }) {
+  return (
+    <aside className="flex min-h-0 w-full flex-col border-t border-white/5 lg:w-96 lg:shrink-0 lg:border-l lg:border-t-0">
+      <div className="flex items-center gap-2 px-4 py-2.5">
+        <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">All activity</span>
+      </div>
+      <div className="min-h-0 flex-1 space-y-px overflow-y-auto px-2 pb-4">
+        {entries.length === 0 && <p className="px-2 py-6 text-center text-xs text-zinc-600">No activity yet.</p>}
+        {entries.map((e) => <AggFeedRow key={`${e.instance}:${e.path}`} e={e} />)}
+      </div>
+    </aside>
+  );
+}
+
+function AggFeedRow({ e }: { e: AggregateEntry }) {
+  const first = e.body.split('\n').find((l) => l.trim()) ?? '';
+  return (
+    <div className="animate-in rounded-lg px-2 py-1.5 hover:bg-white/[0.03]">
+      <div className="flex items-center gap-2 text-[11px]">
+        <span className="mono text-zinc-600">{timeOf(e.ts)}</span>
+        <span className={`rounded px-1.5 py-0.5 font-medium ${KIND_COLOR[e.kind] ?? 'text-zinc-500'}`}>{e.kind}</span>
+        <span className="mono rounded bg-white/5 px-1 py-0.5 text-zinc-400">{e.instance}</span>
+        <span className="truncate text-zinc-400">{e.role}{e.to ? ` → ${e.to}` : ''}</span>
+        {e.stage && <span className="ml-auto shrink-0 text-zinc-600">{e.stage}</span>}
       </div>
       {first && <p className="mt-0.5 line-clamp-2 pl-1 text-xs text-zinc-400">{first}</p>}
     </div>
